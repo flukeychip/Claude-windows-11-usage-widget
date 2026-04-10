@@ -10,12 +10,11 @@ A Windows 11 taskbar widget that displays your Claude.ai token usage as an anima
 - Auto-start with Windows option
 - DPI-aware: works at any resolution, scale factor, or taskbar position
 
-## Requirements
+## Quick Start (no install required)
 
-- Windows 11
-- [.NET 8 Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/8.0) (x64) — or use the self-contained build below
+Download the `release/` folder and double-click `TaskbarWidget.exe`. No .NET install needed — everything is bundled.
 
-## Build
+## Build from source
 
 ```
 dotnet build -c Release
