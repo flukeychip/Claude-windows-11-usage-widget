@@ -12,7 +12,10 @@ A Windows 11 taskbar widget that displays your Claude.ai token usage as an anima
 
 ## Quick Start (no install required)
 
-Download the `release/` folder and double-click `TaskbarWidget.exe`. No .NET install needed — everything is bundled.
+1. Download `TaskbarWidget.zip` from the [Releases](https://github.com/flukeychip/Claude-windows-11-usage-widget/releases) page
+2. Extract and double-click `TaskbarWidget.exe`
+
+No .NET install needed — everything is bundled.
 
 ## Build from source
 

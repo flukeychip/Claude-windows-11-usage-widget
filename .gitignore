@@ -1,6 +1,7 @@
 bin/
 obj/
-!release/
+release/
+*.zip
 .claude/
 *.user
 *.suo
