@@ -7,3 +7,7 @@ release/
 *.suo
 .vs/
 anamations.psd
+anamations/
+anamations.png
+frames/
+Assets/Sprites/preview/
