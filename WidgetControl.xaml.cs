@@ -267,12 +267,18 @@ public partial class WidgetControl : UserControl
         BarGroupTranslate.BeginAnimation(System.Windows.Media.TranslateTransform.YProperty, yUp);
     }
 
+    // Base sprite is 11px wide shown at 21 logical px — scale = 21/11
+    private const double SpritePixelScale = 21.0 / 11.0;
+
     private void SetSpriteFrame(string frameName)
     {
         try
         {
             var uri = new Uri($"pack://application:,,,/Assets/Sprites/{frameName}");
-            SpriteImage.Source = new System.Windows.Media.Imaging.BitmapImage(uri);
+            var bmp = new System.Windows.Media.Imaging.BitmapImage(uri);
+            SpriteImage.Source = bmp;
+            // Wider frames (jab) expand rightward; normal frames stay at 21px
+            SpriteImage.Width = bmp.PixelWidth * SpritePixelScale;
         }
         catch (Exception ex)
         {

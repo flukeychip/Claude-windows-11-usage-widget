@@ -37,9 +37,10 @@
                Width="21"
                Height="21"
                VerticalAlignment="Center"
-               HorizontalAlignment="Center"
+               HorizontalAlignment="Left"
                Margin="5,0,4,0"
                IsHitTestVisible="False"
+               Stretch="Uniform"
                RenderOptions.BitmapScalingMode="NearestNeighbor"/>
 
         <!-- ── Bar + label group (shadow here so sprite is unaffected) ──── -->
