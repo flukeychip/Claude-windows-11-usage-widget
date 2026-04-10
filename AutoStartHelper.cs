@@ -1,68 +1,64 @@
 using System;
 using System.Diagnostics;
-using Microsoft.Win32;
 using System.Windows;
 using System.Windows.Controls;
+using Microsoft.Win32;
 
-namespace TaskbarWidget;
-
-internal static class AutoStartHelper
+namespace TaskbarWidget
 {
-    private const string RunKey  = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
-    private const string AppName = "TaskbarWidget";
-
-    // ── Public API ─────────────────────────────────────────────────────────────
-
-    public static bool IsEnabled()
+    internal static class AutoStartHelper
     {
-        try
+        private const string RunKey  = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+        private const string AppName = "TaskbarWidget";
+
+        public static bool IsEnabled()
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey);
-            return key?.GetValue(AppName) is not null;
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(RunKey);
+                return key?.GetValue(AppName) is not null;
+            }
+            catch { return false; }
         }
-        catch { return false; }
-    }
 
-    public static void Enable()
-    {
-        try
+        public static void Enable()
         {
-            string exe = Process.GetCurrentProcess().MainModule!.FileName;
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
-            key?.SetValue(AppName, $"\"{exe}\"");
+            try
+            {
+                string exe = Process.GetCurrentProcess().MainModule!.FileName;
+                using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+                key?.SetValue(AppName, $"\"{exe}\"");
+            }
+            catch { }
         }
-        catch { /* silently ignore — user can retry via context menu */ }
-    }
 
-    public static void Disable()
-    {
-        try
+        public static void Disable()
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
-            key?.DeleteValue(AppName, throwOnMissingValue: false);
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+                key?.DeleteValue(AppName, throwOnMissingValue: false);
+            }
+            catch { }
         }
-        catch { }
-    }
 
-    /// <summary>
-    /// On first launch, prompt for auto-start preference.
-    /// </summary>
-    public static void PromptIfNeeded(WidgetConfig config)
-    {
-        if (!config.AutoStartPromptShown)
+        public static void PromptIfNeeded(WidgetConfig config)
         {
-            var result = MessageBox.Show(
-                "Would you like TaskbarWidget to start automatically when you log in to Windows?",
-                "TaskbarWidget — First Run",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question,
-                MessageBoxResult.Yes);
+            if (!config.AutoStartPromptShown)
+            {
+                var result = MessageBox.Show(
+                    "Would you like TaskbarWidget to start automatically when you log in to Windows?",
+                    "TaskbarWidget — First Run",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question,
+                    MessageBoxResult.Yes);
 
-            if (result == MessageBoxResult.Yes)
-                Enable();
+                if (result == MessageBoxResult.Yes)
+                    Enable();
 
-            config.AutoStartPromptShown = true;
-            ConfigStore.Save(config);
+                config.AutoStartPromptShown = true;
+                ConfigStore.Save(config);
+            }
         }
     }
 }
