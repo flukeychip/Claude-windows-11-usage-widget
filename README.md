@@ -1,14 +1,15 @@
 # Claude Windows 11 Usage Widget
 
-Taskbar widget showing your Claude.ai token usage in real time.
+Taskbar widget showing your Claude.ai session usage in real time.
 
 ## Quick Start
 
-1. Download `TaskbarWidget.exe`
-2. Double-click it
-3. Widget appears on your taskbar
+1. Go to [Releases](https://github.com/flukeychip/Claude-windows-11-usage-widget/releases/latest)
+2. Download `TaskbarWidget.zip`
+3. Extract all files into a folder
+4. Double-click `TaskbarWidget.exe`
 
-No installation or setup required.
+No installation required. Keep all extracted files together.
 
 ## Usage
 
