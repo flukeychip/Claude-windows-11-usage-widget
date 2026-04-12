@@ -1,266 +1,362 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
+using Newtonsoft.Json;
 
 namespace TaskbarWidget
 {
-    public enum FetchError { None, NotLoggedIn, NetworkError, ServiceDown }
+    public enum FetchError { None, NotLoggedIn, NetworkError, ServiceDown, ParseError }
+
+    internal class SavedCookie
+    {
+        public string Name    { get; set; } = "";
+        public string Value   { get; set; } = "";
+        public string Domain  { get; set; } = "";
+        public string Path    { get; set; } = "/";
+    }
 
     /// <summary>
-    /// Fetches Claude.ai usage via a persistent hidden WebView2 instance.
-    /// Kept alive between refreshes — subsequent calls are near-instant.
+    /// Fetches Claude.ai usage.
+    /// - First run / expired cookies: WebView2 login → extracts + saves cookies → disposes WebView2
+    /// - All subsequent fetches: HttpClient with saved cookies (~15MB idle vs ~68MB)
+    /// - Break detection: logs detailed diagnostics + raw HTML to debug file
     /// </summary>
     internal static class BrowserService
     {
-        private static readonly string UserDataDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "TaskbarWidget", "webview2-profile");
+        private static readonly string AppDataDir     = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TaskbarWidget");
+        private static readonly string CookieFile     = Path.Combine(AppDataDir, "cookies.json");
+        private static readonly string FlagFile       = Path.Combine(AppDataDir, "wv2-logged-in.flag");
+        private static readonly string UserDataDir    = Path.Combine(AppDataDir, "webview2-profile");
+        private static readonly string DebugLog       = Path.Combine(AppDataDir, "debug.log");
+        private static readonly string DebugHtmlFile  = Path.Combine(AppDataDir, "last_response.html");
 
-        private static readonly string FlagPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "TaskbarWidget", "wv2-logged-in.flag");
-
-        private static bool _firstRun = !File.Exists(FlagPath);
-
-        // Persistent WebView2 — survives between refreshes
-        private static WebView2?  _webView;
-        private static Window?    _hiddenWindow;
-        private static bool       _ready = false;
+        // Singleton HttpClient — reused across all fetches (lightweight, ~1MB)
+        private static HttpClient? _http;
 
         public static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchUsageAsync(CancellationToken ct = default)
         {
             return await Application.Current.Dispatcher.InvokeAsync(
-                async () => await FetchOnUiThread(ct)).Task.Unwrap();
+                async () => await FetchInternal(ct)).Task.Unwrap();
         }
 
-        /// <summary>Call on app shutdown to cleanly release the WebView2.</summary>
         public static void Dispose()
         {
-            try { _webView?.Dispose(); }    catch { }
-            try { _hiddenWindow?.Close(); } catch { }
-            _webView      = null;
-            _hiddenWindow = null;
-            _ready        = false;
+            _http?.Dispose();
+            _http = null;
         }
 
-        // ── UI-thread work ────────────────────────────────────────────────────
+        // ── Main fetch logic ──────────────────────────────────────────────────
 
-        private static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchOnUiThread(CancellationToken ct)
+        private static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchInternal(CancellationToken ct)
+        {
+            // Have cookies on disk → try HttpClient first
+            if (File.Exists(CookieFile))
+            {
+                var (usage, reset, error) = await FetchViaHttpClient(ct);
+
+                if (error == FetchError.None)
+                    return (usage, reset, FetchError.None);
+
+                if (error == FetchError.NetworkError)
+                    return (null, null, FetchError.NetworkError);
+
+                // Cookies expired or HTML structure changed → re-auth
+                Log($"BREAK: HttpClient returned {error} — clearing cookies, re-authenticating");
+                TryDelete(CookieFile);
+                _http?.Dispose();
+                _http = null;
+            }
+
+            // No cookies or just cleared → launch WebView2 to log in and grab cookies
+            var authErr = await AuthenticateWithWebView2(ct);
+            if (authErr != FetchError.None) return (null, null, authErr);
+
+            // One fetch with fresh cookies
+            return await FetchViaHttpClient(ct);
+        }
+
+        // ── HttpClient fetch ──────────────────────────────────────────────────
+
+        private static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchViaHttpClient(CancellationToken ct)
         {
             try
             {
-                // Init once — reuse on every subsequent call
-                if (!_ready)
+                var cookies = LoadCookies();
+                if (cookies == null || cookies.Count == 0)
                 {
-                    var initError = await InitializeAsync(ct);
-                    if (initError != FetchError.None)
-                        return (null, null, initError);
+                    Log("HttpClient: no cookies on disk");
+                    return (null, null, FetchError.NotLoggedIn);
                 }
 
-                // If already on login page, not logged in
-                var currentUrl = _webView!.CoreWebView2.Source ?? "";
-                if (currentUrl.Contains("/login") || currentUrl.Contains("/auth"))
-                    return (null, null, FetchError.NotLoggedIn);
+                _http ??= CreateHttpClient();
 
-                // Navigate to usage page
-                bool navOk    = false;
-                bool navFail  = false;
-                var navTcs    = new TaskCompletionSource<bool>();
+                // Rebuild Cookie header from saved cookies
+                var cookieHeader = string.Join("; ", cookies.Select(c => $"{c.Name}={c.Value}"));
+                _http.DefaultRequestHeaders.Remove("Cookie");
+                _http.DefaultRequestHeaders.Add("Cookie", cookieHeader);
 
-                void OnNavCompleted(object? s, CoreWebView2NavigationCompletedEventArgs e)
+                Log($"HttpClient: GET /settings/usage ({cookies.Count} cookies)");
+
+                var response = await _http.GetAsync("https://claude.ai/settings/usage", ct);
+
+                Log($"HttpClient: {(int)response.StatusCode} — final URL: {response.RequestMessage?.RequestUri}");
+
+                // Redirect or 401 = session expired
+                var finalUrl = response.RequestMessage?.RequestUri?.ToString() ?? "";
+                if (finalUrl.Contains("/login") || finalUrl.Contains("/auth") ||
+                    response.StatusCode == HttpStatusCode.Unauthorized ||
+                    response.StatusCode == HttpStatusCode.Forbidden)
                 {
-                    navOk   = e.IsSuccess;
-                    navFail = !e.IsSuccess;
-                    navTcs.TrySetResult(e.IsSuccess);
+                    Log("BREAK: Session expired (redirected to login or 401/403)");
+                    return (null, null, FetchError.NotLoggedIn);
                 }
 
-                _webView.CoreWebView2.NavigationCompleted += OnNavCompleted;
-                _webView.CoreWebView2.Navigate("https://claude.ai/settings/usage");
-                await Task.WhenAny(navTcs.Task, Task.Delay(TimeSpan.FromSeconds(15), ct));
-                _webView.CoreWebView2.NavigationCompleted -= OnNavCompleted;
-
-                // Check if we were redirected to login
-                var finalUrl = _webView.CoreWebView2.Source ?? "";
-                if (finalUrl.Contains("/login") || finalUrl.Contains("/auth"))
-                    return (null, null, FetchError.NotLoggedIn);
-
-                if (navFail || !navOk)
+                if (!response.IsSuccessStatusCode)
+                {
+                    Log($"BREAK: HTTP {(int)response.StatusCode}");
                     return (null, null, FetchError.ServiceDown);
-
-                // Poll for React-rendered usage data
-                double? result   = null;
-                string? resetTime = null;
-                var deadline = DateTime.UtcNow.AddSeconds(12);
-
-                while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
-                {
-                    var raw = await _webView.CoreWebView2.ExecuteScriptAsync(@"
-                        (function() {
-                            var pct = null, reset = null;
-                            var all = Array.from(document.querySelectorAll('*'));
-
-                            for (var i = 0; i < all.length && pct === null; i++) {
-                                var el = all[i];
-                                var t = el.textContent.trim();
-                                if (el.children.length > 3 || !/^\d{1,3}%\s+used$/i.test(t)) continue;
-                                var node = el;
-                                for (var d = 0; d < 10; d++) {
-                                    if (!node) break;
-                                    if (/current\s+session/i.test(node.textContent)) { pct = parseInt(t.match(/(\d+)/)[1], 10); break; }
-                                    node = node.parentElement;
-                                }
-                            }
-
-                            if (pct === null) {
-                                for (var i = 0; i < all.length; i++) {
-                                    var t = all[i].textContent.trim();
-                                    if (all[i].children.length <= 2 && /^\d{1,3}%\s+used$/i.test(t)) {
-                                        pct = parseInt(t.match(/(\d+)/)[1], 10); break;
-                                    }
-                                }
-                            }
-
-                            for (var i = 0; i < all.length && reset === null; i++) {
-                                var t = all[i].textContent.trim();
-                                if (all[i].children.length > 2 || t.length > 80) continue;
-                                var r = t.match(/Resets?\s+((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+\d+:\d+\s*(?:AM|PM)?)/i)
-                                     || t.match(/Resets?\s+in\s+([\d]+\s+days?(?:\s+[\d]+\s+hr)?(?:\s+[\d]+\s+min)?|[\d]+\s+hr(?:s|ours?)?(?:\s+[\d]+\s+min)?|[\d]+\s+min(?:utes?)?)/i);
-                                if (r) reset = r[1].trim();
-                            }
-
-                            if (pct === null) return null;
-                            return JSON.stringify({ pct: pct, reset: reset });
-                        })()
-                    ");
-
-                    if (raw != "null" && raw != null)
-                    {
-                        var json     = raw.Trim('"').Replace("\\\"", "\"");
-                        var pctMatch   = System.Text.RegularExpressions.Regex.Match(json, @"""pct""\s*:\s*(\d+)");
-                        var resetMatch = System.Text.RegularExpressions.Regex.Match(json, @"""reset""\s*:\s*""([^""]+)""");
-                        if (pctMatch.Success &&
-                            double.TryParse(pctMatch.Groups[1].Value,
-                                System.Globalization.NumberStyles.Float,
-                                System.Globalization.CultureInfo.InvariantCulture, out var pct))
-                        {
-                            result    = Math.Min(Math.Max(pct / 100.0, 0.0), 1.0);
-                            resetTime = resetMatch.Success ? resetMatch.Groups[1].Value : null;
-                            return (result, resetTime, FetchError.None);
-                        }
-                    }
-
-                    await Task.Delay(500, ct);
                 }
 
-                // Timed out parsing — page loaded but data missing
-                return (null, null, FetchError.ServiceDown);
+                var html = await response.Content.ReadAsStringAsync();
+                Log($"HttpClient: response body length={html.Length}");
+
+                // Always save last response for debugging
+                TrySave(DebugHtmlFile, html);
+
+                var (pct, reset) = ParseUsage(html);
+
+                if (pct == null)
+                {
+                    Log($"BREAK: Could not parse usage percentage from response.\n" +
+                        $"  → Check {DebugHtmlFile} for the raw HTML\n" +
+                        $"  → Check {DebugLog} for request details\n" +
+                        $"  → Likely cause: claude.ai changed their page structure");
+                    return (null, null, FetchError.ParseError);
+                }
+
+                Log($"HttpClient: parsed pct={pct}%, reset='{reset}'");
+                return (pct.Value / 100.0, reset, FetchError.None);
+            }
+            catch (Exception ex) when (ex is HttpRequestException || ex is TaskCanceledException || ex is OperationCanceledException)
+            {
+                Log($"HttpClient: network error — {ex.GetType().Name}: {ex.Message}");
+                return (null, null, FetchError.NetworkError);
             }
             catch (Exception ex)
             {
-                WriteDebugLog($"FetchOnUiThread exception: {ex.GetType().Name}: {ex.Message}");
-
-                // Reset so next call re-initializes
-                _ready = false;
-
-                bool isNetwork = ex.Message.Contains("net::") ||
-                                 ex.Message.Contains("ERR_NAME") ||
-                                 ex.Message.Contains("ERR_INTERNET") ||
-                                 ex.Message.Contains("ERR_CONNECTION") ||
-                                 ex is System.Net.WebException;
-
-                return (null, null, isNetwork ? FetchError.NetworkError : FetchError.ServiceDown);
+                Log($"HttpClient: unexpected error — {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                return (null, null, FetchError.ServiceDown);
             }
         }
 
-        private static async Task<FetchError> InitializeAsync(CancellationToken ct)
+        // ── HTML parsing ──────────────────────────────────────────────────────
+
+        private static (int? pct, string? reset) ParseUsage(string html)
         {
+            int?    pct   = null;
+            string? reset = null;
+
+            // Strategy 1: __NEXT_DATA__ JSON blob (Next.js SSR — most reliable)
+            var ndMatch = Regex.Match(html,
+                @"<script id=""__NEXT_DATA__"" type=""application/json"">([\s\S]*?)</script>",
+                RegexOptions.IgnoreCase);
+
+            if (ndMatch.Success)
+            {
+                var json = ndMatch.Groups[1].Value;
+                Log($"__NEXT_DATA__: found ({json.Length} chars)");
+
+                // Look for numeric percentage near usage-related keys
+                var pm = Regex.Match(json, @"""(?:percentage|pct|used_percentage|value)""\s*:\s*(\d{1,3})");
+                if (pm.Success) pct = int.Parse(pm.Groups[1].Value);
+
+                var rm = Regex.Match(json, @"""(?:reset_at|resetAt|reset_time|resets_at)""\s*:\s*""([^""]+)""");
+                if (rm.Success) reset = rm.Groups[1].Value;
+            }
+
+            // Strategy 2: "X% used" anywhere in HTML
+            if (pct == null)
+            {
+                var pm = Regex.Match(html, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
+                if (pm.Success) pct = int.Parse(pm.Groups[1].Value);
+            }
+
+            // Strategy 3: reset time text patterns
+            if (reset == null)
+            {
+                var rm = Regex.Match(html,
+                    @"Resets?\s+((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+\d{1,2}:\d{2}\s*(?:AM|PM)?)",
+                    RegexOptions.IgnoreCase);
+                if (!rm.Success)
+                    rm = Regex.Match(html,
+                        @"Resets?\s+in\s+([\d]+\s+days?(?:\s+[\d]+\s+hr)?(?:\s+[\d]+\s+min)?|[\d]+\s+hr(?:s|ours?)?(?:\s+[\d]+\s+min)?|[\d]+\s+min(?:utes?)?)",
+                        RegexOptions.IgnoreCase);
+                if (rm.Success) reset = rm.Groups[1].Value.Trim();
+            }
+
+            if (pct == null)
+                Log("ParseUsage: all strategies failed — page structure may have changed");
+
+            return (pct, reset);
+        }
+
+        // ── WebView2 authentication ───────────────────────────────────────────
+
+        private static async Task<FetchError> AuthenticateWithWebView2(CancellationToken ct)
+        {
+            Log("WebView2: starting authentication");
+            Window?   win  = null;
+            WebView2? wv   = null;
+
             try
             {
-                _hiddenWindow = new Window
+                win = new Window
                 {
-                    Width         = 1,
-                    Height        = 1,
-                    Left          = -32000,
-                    Top           = -32000,
-                    WindowStyle   = WindowStyle.None,
-                    ShowInTaskbar = false,
-                    Opacity       = 0,
+                    Width = 1, Height = 1, Left = -32000, Top = -32000,
+                    WindowStyle = WindowStyle.None, ShowInTaskbar = false, Opacity = 0
                 };
-
-                _webView = new WebView2 { Width = 1, Height = 1 };
-                _hiddenWindow.Content = _webView;
-                _hiddenWindow.Show();
+                wv = new WebView2 { Width = 1, Height = 1 };
+                win.Content = wv;
+                win.Show();
 
                 Directory.CreateDirectory(UserDataDir);
                 var env = await CoreWebView2Environment.CreateAsync(userDataFolder: UserDataDir);
-                await _webView.EnsureCoreWebView2Async(env);
+                await wv.EnsureCoreWebView2Async(env);
 
-                _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
-                _webView.CoreWebView2.Settings.AreDevToolsEnabled            = false;
-                _webView.CoreWebView2.NewWindowRequested += (s, e) => e.Handled = true;
+                wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+                wv.CoreWebView2.Settings.AreDevToolsEnabled            = false;
+                wv.CoreWebView2.NewWindowRequested += (s, e) => e.Handled = true;
 
-                if (_firstRun)
+                bool needsLogin = !File.Exists(FlagFile);
+
+                if (needsLogin)
                 {
-                    _hiddenWindow.Opacity     = 1;
-                    _hiddenWindow.Width       = 600;
-                    _hiddenWindow.Height      = 700;
-                    _hiddenWindow.Left        = (SystemParameters.WorkArea.Width  - 600) / 2;
-                    _hiddenWindow.Top         = (SystemParameters.WorkArea.Height - 700) / 2;
-                    _hiddenWindow.WindowStyle = WindowStyle.SingleBorderWindow;
-                    _hiddenWindow.Title       = "Sign in to Claude, then close this window";
-                    _webView.Width            = 600;
-                    _webView.Height           = 700;
+                    // Show visible login window
+                    win.Opacity = 1; win.Width = 600; win.Height = 700;
+                    win.Left = (SystemParameters.WorkArea.Width - 600) / 2;
+                    win.Top  = (SystemParameters.WorkArea.Height - 700) / 2;
+                    win.WindowStyle = WindowStyle.SingleBorderWindow;
+                    win.Title = "Sign in to Claude, then close this window";
+                    wv.Width = 600; wv.Height = 700;
 
-                    _webView.CoreWebView2.Navigate("https://claude.ai/login");
+                    wv.CoreWebView2.Navigate("https://claude.ai/login");
 
-                    var loginDeadline = DateTime.UtcNow.AddMinutes(5);
-                    while (DateTime.UtcNow < loginDeadline && !ct.IsCancellationRequested)
+                    var deadline = DateTime.UtcNow.AddMinutes(5);
+                    while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
                     {
                         await Task.Delay(500, ct);
-                        var url = _webView.CoreWebView2.Source ?? "";
-                        if (!url.Contains("/login") && !url.Contains("/auth") && url.Contains("claude.ai"))
+                        var url = wv.CoreWebView2.Source ?? "";
+                        Log($"WebView2: login poll — {url}");
+                        if (url.Contains("claude.ai") && !url.Contains("/login") && !url.Contains("/auth"))
                             break;
                     }
 
-                    File.WriteAllText(FlagPath, DateTime.UtcNow.ToString("O"));
-                    _firstRun = false;
-
-                    _hiddenWindow.Opacity     = 0;
-                    _hiddenWindow.Width       = 1;
-                    _hiddenWindow.Height      = 1;
-                    _hiddenWindow.Left        = -32000;
-                    _hiddenWindow.Top         = -32000;
-                    _hiddenWindow.WindowStyle = WindowStyle.None;
-                    _webView.Width            = 1;
-                    _webView.Height           = 1;
+                    File.WriteAllText(FlagFile, DateTime.UtcNow.ToString("O"));
+                    win.Opacity = 0; win.Width = 1; win.Height = 1;
+                    win.Left = -32000; win.Top = -32000;
+                    win.WindowStyle = WindowStyle.None;
+                    wv.Width = 1; wv.Height = 1;
                 }
 
-                _ready = true;
+                // Navigate to usage page so all auth cookies are set
+                var navTcs = new TaskCompletionSource<bool>();
+                wv.CoreWebView2.NavigationCompleted += (s, e) => navTcs.TrySetResult(e.IsSuccess);
+                wv.CoreWebView2.Navigate("https://claude.ai/settings/usage");
+                await Task.WhenAny(navTcs.Task, Task.Delay(TimeSpan.FromSeconds(12), ct));
+
+                // Extract all claude.ai cookies
+                var wvCookies = await wv.CoreWebView2.CookieManager.GetCookiesAsync("https://claude.ai");
+                var saved = wvCookies.Select(c => new SavedCookie
+                {
+                    Name   = c.Name,
+                    Value  = c.Value,
+                    Domain = c.Domain,
+                    Path   = c.Path
+                }).ToList();
+
+                Log($"WebView2: extracted {saved.Count} cookies from claude.ai");
+                SaveCookies(saved);
+
                 return FetchError.None;
             }
             catch (Exception ex)
             {
-                WriteDebugLog($"InitializeAsync exception: {ex.GetType().Name}: {ex.Message}");
-                try { _webView?.Dispose(); }    catch { }
-                try { _hiddenWindow?.Close(); } catch { }
-                _webView = null; _hiddenWindow = null;
+                Log($"WebView2: auth failed — {ex.GetType().Name}: {ex.Message}");
                 return FetchError.NetworkError;
+            }
+            finally
+            {
+                // Always dispose WebView2 after auth — not needed anymore
+                try { wv?.Dispose(); }  catch { }
+                try { win?.Close(); }   catch { }
+                Log("WebView2: disposed after auth");
             }
         }
 
-        private static void WriteDebugLog(string content)
+        // ── Helpers ───────────────────────────────────────────────────────────
+
+        private static HttpClient CreateHttpClient()
+        {
+            var handler = new HttpClientHandler
+            {
+                AllowAutoRedirect  = true,
+                UseCookies         = false,   // we set Cookie header manually
+                MaxAutomaticRedirections = 5,
+            };
+
+            var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+            client.DefaultRequestHeaders.Add("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+            client.DefaultRequestHeaders.Add("Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
+            return client;
+        }
+
+        private static List<SavedCookie>? LoadCookies()
         {
             try
             {
-                var logPath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "TaskbarWidget", "debug.log");
-                Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
-                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {content}\n");
+                if (!File.Exists(CookieFile)) return null;
+                var json = File.ReadAllText(CookieFile);
+                return JsonConvert.DeserializeObject<List<SavedCookie>>(json);
+            }
+            catch { return null; }
+        }
+
+        private static void SaveCookies(List<SavedCookie> cookies)
+        {
+            try
+            {
+                Directory.CreateDirectory(AppDataDir);
+                File.WriteAllText(CookieFile, JsonConvert.SerializeObject(cookies, Formatting.Indented));
+            }
+            catch { }
+        }
+
+        private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
+
+        private static void TrySave(string path, string content)
+        {
+            try { Directory.CreateDirectory(AppDataDir); File.WriteAllText(path, content); }
+            catch { }
+        }
+
+        internal static void Log(string msg)
+        {
+            try
+            {
+                Directory.CreateDirectory(AppDataDir);
+                File.AppendAllText(DebugLog, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {msg}\n");
             }
             catch { }
         }
