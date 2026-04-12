@@ -76,7 +76,8 @@ namespace TaskbarWidget
                 _http = null;
             }
 
-            // No cookies or just cleared → launch WebView2 to log in and grab cookies
+            // No cookies or just cleared → always force login window (delete stale flag)
+            TryDelete(FlagFile);
             var authErr = await AuthenticateWithWebView2(ct);
             if (authErr != FetchError.None) return (null, null, authErr);
 
