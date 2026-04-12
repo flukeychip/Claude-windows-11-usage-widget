@@ -14,18 +14,18 @@ namespace TaskbarWidget
         public static Task<double?> FetchMetricAsync(CancellationToken ct = default)
             => Task.FromResult<double?>(_currentValue);
 
-        public static async Task RefreshAsync(Action<double?, string?> onUpdate, CancellationToken ct = default)
+        public static async Task RefreshAsync(Action<double?, string?, FetchError> onUpdate, CancellationToken ct = default)
         {
             if (_isFetching) return;
             _isFetching = true;
 
             try
             {
-                var (usage, resetTime) = await BrowserService.FetchUsageAsync(ct);
+                var (usage, resetTime, error) = await BrowserService.FetchUsageAsync(ct);
                 if (usage.HasValue)
                     _currentValue = usage.Value;
 
-                onUpdate(usage, resetTime);
+                onUpdate(usage, resetTime, error);
             }
             finally
             {

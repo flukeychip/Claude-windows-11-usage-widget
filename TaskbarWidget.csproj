@@ -21,4 +21,7 @@
   <ItemGroup>
     <Resource Include="Assets\Sprites\*.png" />
   </ItemGroup>
+  <PropertyGroup>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+  </PropertyGroup>
 </Project>

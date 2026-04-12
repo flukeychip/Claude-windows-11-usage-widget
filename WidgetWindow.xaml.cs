@@ -393,7 +393,7 @@ namespace TaskbarWidget
         }
 
         public void SetValue(double value)      => Widget.SetValue(value);
-        public void SetError()                  => Widget.SetError();
+        public void SetError(string msg = "--:--") => Widget.SetError(msg);
         public void SetLoading(bool loading)    => Widget.SetLoading(loading);
         public void SetResetTime(string? rt)    => Widget.SetResetTime(rt);
 

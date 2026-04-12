@@ -296,11 +296,13 @@ namespace TaskbarWidget
             ResetCounterLabel.Text = string.IsNullOrWhiteSpace(resetTime) ? "--:--" : resetTime;
         }
 
-        public void SetError()
+        public void SetError(string statusMsg = "--:--")
         {
             _isError = true;
-            PercentLabel.Text       = "—";
-            PercentLabel.Foreground = new SolidColorBrush(Color.FromArgb(100, 42, 42, 42));
+            PercentLabel.Text            = "—";
+            PercentLabel.Foreground      = new SolidColorBrush(Color.FromArgb(100, 42, 42, 42));
+            ResetCounterLabel.Text       = statusMsg;
+            ResetCounterLabel.Foreground = new SolidColorBrush(Color.FromArgb(140, 42, 42, 42));
             AnimateFillTo(0);
         }
 
