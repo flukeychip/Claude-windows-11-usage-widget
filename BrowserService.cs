@@ -105,19 +105,24 @@ namespace TaskbarWidget
                 _http.DefaultRequestHeaders.Remove("Cookie");
                 _http.DefaultRequestHeaders.Add("Cookie", cookieHeader);
 
-                Log($"HttpClient: GET /settings/usage ({cookies.Count} cookies)");
+                Log($"HttpClient: GET /settings/usage ({cookies.Count} cookies): {string.Join(", ", cookies.Select(c => c.Name))}");
 
                 var response = await _http.GetAsync("https://claude.ai/settings/usage", ct);
 
                 Log($"HttpClient: {(int)response.StatusCode} — final URL: {response.RequestMessage?.RequestUri}");
 
-                // Redirect or 401 = session expired
+                // Always read + save body first — needed for debugging non-200 responses
+                var html = await response.Content.ReadAsStringAsync();
+                TrySave(DebugHtmlFile, html);
+                Log($"HttpClient: body length={html.Length}, first 300 chars: {html.Replace('\n',' ').Substring(0, Math.Min(300, html.Length))}");
+
+                // Redirect or 401/403 = session expired or bot-blocked
                 var finalUrl = response.RequestMessage?.RequestUri?.ToString() ?? "";
                 if (finalUrl.Contains("/login") || finalUrl.Contains("/auth") ||
                     response.StatusCode == HttpStatusCode.Unauthorized ||
                     response.StatusCode == HttpStatusCode.Forbidden)
                 {
-                    Log("BREAK: Session expired (redirected to login or 401/403)");
+                    Log("BREAK: Session expired or request blocked (redirected to login or 401/403)");
                     return (null, null, FetchError.NotLoggedIn);
                 }
 
@@ -127,11 +132,7 @@ namespace TaskbarWidget
                     return (null, null, FetchError.ServiceDown);
                 }
 
-                var html = await response.Content.ReadAsStringAsync();
-                Log($"HttpClient: response body length={html.Length}");
-
-                // Always save last response for debugging
-                TrySave(DebugHtmlFile, html);
+                Log($"HttpClient: full body length={html.Length}");
 
                 var (pct, reset) = ParseUsage(html);
 
@@ -316,8 +317,17 @@ namespace TaskbarWidget
             client.DefaultRequestHeaders.Add("User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
             client.DefaultRequestHeaders.Add("Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8");
             client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
+            client.DefaultRequestHeaders.Add("sec-ch-ua",
+                "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"");
+            client.DefaultRequestHeaders.Add("sec-ch-ua-mobile",   "?0");
+            client.DefaultRequestHeaders.Add("sec-ch-ua-platform", "\"Windows\"");
+            client.DefaultRequestHeaders.Add("sec-fetch-dest", "document");
+            client.DefaultRequestHeaders.Add("sec-fetch-mode", "navigate");
+            client.DefaultRequestHeaders.Add("sec-fetch-site", "none");
+            client.DefaultRequestHeaders.Add("sec-fetch-user", "?1");
+            client.DefaultRequestHeaders.Add("Upgrade-Insecure-Requests", "1");
             return client;
         }
 
