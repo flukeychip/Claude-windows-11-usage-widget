@@ -237,7 +237,7 @@ namespace TaskbarWidget
                 wv.CoreWebView2.Settings.AreDevToolsEnabled            = false;
                 wv.CoreWebView2.NewWindowRequested += (s, e) => e.Handled = true;
 
-                // Always show login window — user closes it when done
+                // Show login window
                 win.Opacity = 1; win.Width = 600; win.Height = 700;
                 win.Left = (SystemParameters.WorkArea.Width - 600) / 2;
                 win.Top  = (SystemParameters.WorkArea.Height - 700) / 2;
@@ -248,15 +248,20 @@ namespace TaskbarWidget
 
                 wv.CoreWebView2.Navigate("https://claude.ai/login");
 
-                // Wait for the user to close the window (up to 10 minutes)
-                var closedTcs = new TaskCompletionSource<bool>();
-                win.Closed += (s, e) => closedTcs.TrySetResult(true);
-                await Task.WhenAny(closedTcs.Task, Task.Delay(TimeSpan.FromMinutes(10), ct));
+                // Intercept the close so WebView2 stays alive long enough to extract cookies
+                var closingTcs = new TaskCompletionSource<bool>();
+                bool allowClose = false;
+                win.Closing += (s, e) =>
+                {
+                    if (!allowClose) { e.Cancel = true; closingTcs.TrySetResult(true); }
+                };
 
-                Log($"WebView2: login window closed, extracting cookies");
+                await Task.WhenAny(closingTcs.Task, Task.Delay(TimeSpan.FromMinutes(10), ct));
+
+                Log("WebView2: close intercepted, extracting cookies while WebView2 still alive");
                 File.WriteAllText(FlagFile, DateTime.UtcNow.ToString("O"));
 
-                // Extract all claude.ai cookies (WebView2 still alive after window close)
+                // Extract cookies — WebView2 is fully alive because we cancelled the close
                 var wvCookies = await wv.CoreWebView2.CookieManager.GetCookiesAsync("https://claude.ai");
                 var saved = wvCookies.Select(c => new SavedCookie
                 {
@@ -267,7 +272,18 @@ namespace TaskbarWidget
                 }).ToList();
 
                 Log($"WebView2: extracted {saved.Count} cookies from claude.ai");
+
+                if (saved.Count == 0)
+                {
+                    Log("WebView2: no cookies — user may not have completed login");
+                    allowClose = true;
+                    try { win?.Close(); } catch { }
+                    return FetchError.NotLoggedIn;
+                }
+
                 SaveCookies(saved);
+                allowClose = true;
+                try { win?.Close(); } catch { }
 
                 return FetchError.None;
             }
