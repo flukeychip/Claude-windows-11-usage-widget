@@ -237,44 +237,26 @@ namespace TaskbarWidget
                 wv.CoreWebView2.Settings.AreDevToolsEnabled            = false;
                 wv.CoreWebView2.NewWindowRequested += (s, e) => e.Handled = true;
 
-                bool needsLogin = !File.Exists(FlagFile);
+                // Always show login window — user closes it when done
+                win.Opacity = 1; win.Width = 600; win.Height = 700;
+                win.Left = (SystemParameters.WorkArea.Width - 600) / 2;
+                win.Top  = (SystemParameters.WorkArea.Height - 700) / 2;
+                win.WindowStyle = WindowStyle.SingleBorderWindow;
+                win.ShowInTaskbar = true;
+                win.Title = "Sign in to Claude, then close this window";
+                wv.Width = 600; wv.Height = 700;
 
-                if (needsLogin)
-                {
-                    // Show visible login window
-                    win.Opacity = 1; win.Width = 600; win.Height = 700;
-                    win.Left = (SystemParameters.WorkArea.Width - 600) / 2;
-                    win.Top  = (SystemParameters.WorkArea.Height - 700) / 2;
-                    win.WindowStyle = WindowStyle.SingleBorderWindow;
-                    win.Title = "Sign in to Claude, then close this window";
-                    wv.Width = 600; wv.Height = 700;
+                wv.CoreWebView2.Navigate("https://claude.ai/login");
 
-                    wv.CoreWebView2.Navigate("https://claude.ai/login");
+                // Wait for the user to close the window (up to 10 minutes)
+                var closedTcs = new TaskCompletionSource<bool>();
+                win.Closed += (s, e) => closedTcs.TrySetResult(true);
+                await Task.WhenAny(closedTcs.Task, Task.Delay(TimeSpan.FromMinutes(10), ct));
 
-                    var deadline = DateTime.UtcNow.AddMinutes(5);
-                    while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
-                    {
-                        await Task.Delay(500, ct);
-                        var url = wv.CoreWebView2.Source ?? "";
-                        Log($"WebView2: login poll — {url}");
-                        if (url.Contains("claude.ai") && !url.Contains("/login") && !url.Contains("/auth"))
-                            break;
-                    }
+                Log($"WebView2: login window closed, extracting cookies");
+                File.WriteAllText(FlagFile, DateTime.UtcNow.ToString("O"));
 
-                    File.WriteAllText(FlagFile, DateTime.UtcNow.ToString("O"));
-                    win.Opacity = 0; win.Width = 1; win.Height = 1;
-                    win.Left = -32000; win.Top = -32000;
-                    win.WindowStyle = WindowStyle.None;
-                    wv.Width = 1; wv.Height = 1;
-                }
-
-                // Navigate to usage page so all auth cookies are set
-                var navTcs = new TaskCompletionSource<bool>();
-                wv.CoreWebView2.NavigationCompleted += (s, e) => navTcs.TrySetResult(e.IsSuccess);
-                wv.CoreWebView2.Navigate("https://claude.ai/settings/usage");
-                await Task.WhenAny(navTcs.Task, Task.Delay(TimeSpan.FromSeconds(12), ct));
-
-                // Extract all claude.ai cookies
+                // Extract all claude.ai cookies (WebView2 still alive after window close)
                 var wvCookies = await wv.CoreWebView2.CookieManager.GetCookiesAsync("https://claude.ai");
                 var saved = wvCookies.Select(c => new SavedCookie
                 {
