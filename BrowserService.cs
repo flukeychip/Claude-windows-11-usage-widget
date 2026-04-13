@@ -136,12 +136,41 @@ namespace TaskbarWidget
                     }
                 }
 
-                // Extra wait for any dynamic/JS rendering after navigation
-                await Task.Delay(1500, ct);
+                // Wait for React to render usage content (polls every 500ms, up to 15s)
+                // Returns full outerHTML once "% used" or "Resets" appears in visible text
+                var waitScript = @"(function() {
+                    return new Promise(function(resolve) {
+                        var attempts = 0;
+                        var poll = setInterval(function() {
+                            attempts++;
+                            var text = document.body ? document.body.innerText : '';
+                            if (text.indexOf('% used') !== -1 || text.indexOf('Resets') !== -1 || attempts >= 30) {
+                                clearInterval(poll);
+                                resolve(JSON.stringify({ text: text.substring(0, 200), html: document.documentElement.outerHTML }));
+                            }
+                        }, 500);
+                    });
+                })()";
 
-                // Extract full page HTML
-                var htmlJson = await wv.CoreWebView2.ExecuteScriptAsync("document.documentElement.outerHTML");
-                var html = JsonConvert.DeserializeObject<string>(htmlJson) ?? "";
+                var waitTask = wv.CoreWebView2.ExecuteScriptAsync(waitScript);
+                await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(18), ct));
+
+                string html;
+                if (waitTask.IsCompleted)
+                {
+                    var resultJson = await waitTask;
+                    // resultJson is a JSON-encoded string containing { text, html } JSON — unwrap twice
+                    var inner = JsonConvert.DeserializeObject<string>(resultJson) ?? "{}";
+                    var obj = Newtonsoft.Json.Linq.JObject.Parse(inner);
+                    html = obj["html"]?.ToString() ?? "";
+                    Log($"WebView2 fetch: React content ready, preview: {obj["text"]?.ToString() ?? ""}");
+                }
+                else
+                {
+                    Log("WebView2 fetch: timed out waiting for React content, grabbing current HTML");
+                    var htmlJson = await wv.CoreWebView2.ExecuteScriptAsync("document.documentElement.outerHTML");
+                    html = JsonConvert.DeserializeObject<string>(htmlJson) ?? "";
+                }
 
                 Log($"WebView2 fetch: html length = {html.Length}");
                 TrySave(DebugHtmlFile, html);
