@@ -41,10 +41,26 @@ namespace TaskbarWidget
         public const int WM_DESTROY        = 0x0002;
 
         public const uint ABM_GETTASKBARPOS = 0x00000005;
+        public const uint ABM_GETSTATE      = 0x00000004;
+        public const uint ABS_AUTOHIDE      = 0x00000001;
         public const uint ABE_LEFT          = 0;
         public const uint ABE_TOP           = 1;
         public const uint ABE_RIGHT         = 2;
         public const uint ABE_BOTTOM        = 3;
+
+        public const int SW_HIDE = 0;
+        public const int SW_SHOW = 5;
+
+        public enum QUNS
+        {
+            QUNS_NOT_PRESENT             = 1,
+            QUNS_BUSY                    = 2,
+            QUNS_RUNNING_D3D_FULL_SCREEN = 3,
+            QUNS_PRESENTATION_MODE       = 4,
+            QUNS_ACCEPTS_NOTIFICATIONS   = 5,
+            QUNS_QUIET_TIME              = 6,
+            QUNS_APP                     = 7,
+        }
 
         public const uint MONITOR_DEFAULTTONEAREST = 2;
         public const int  MDT_EFFECTIVE_DPI        = 0;
@@ -152,5 +168,14 @@ namespace TaskbarWidget
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        [DllImport("user32.dll")]
+        public static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("shell32.dll")]
+        public static extern int SHQueryUserNotificationState(out QUNS pquns);
     }
 }

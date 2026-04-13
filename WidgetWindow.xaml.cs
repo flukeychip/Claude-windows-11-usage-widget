@@ -21,7 +21,11 @@ namespace TaskbarWidget
         private TaskbarState? _taskbarState;
         private WidgetConfig  _config;
         private System.Windows.Threading.DispatcherTimer? _topmostTimer;
+        private System.Windows.Threading.DispatcherTimer? _behaviorTimer;
         private bool _snapBackActive;
+
+        // True when the widget should be suppressed (fullscreen app / taskbar auto-hidden / screenshot)
+        private bool _suppressed = false;
 
         public event Action? RefreshRequested;
         public event Action? SilentRefreshRequested;
@@ -52,6 +56,8 @@ namespace TaskbarWidget
             _topmostTimer.Interval = TimeSpan.FromMilliseconds(50);
             _topmostTimer.Tick += (_, _) =>
             {
+                if (_suppressed) return;  // fullscreen / auto-hide / screenshot active
+
                 var h = new WindowInteropHelper(this).Handle;
                 if (h == IntPtr.Zero) return;
 
@@ -67,12 +73,18 @@ namespace TaskbarWidget
                     NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
             };
             _topmostTimer.Start();
+
+            // 1-second check: fullscreen, auto-hide taskbar, screenshot overlay
+            _behaviorTimer = new System.Windows.Threading.DispatcherTimer();
+            _behaviorTimer.Interval = TimeSpan.FromSeconds(1);
+            _behaviorTimer.Tick += OnBehaviorTick;
+            _behaviorTimer.Start();
         }
 
         private void OnVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
         {
             bool visible = (bool)e.NewValue;
-            if (!visible)
+            if (!visible && !_suppressed)
             {
                 Show();
                 var hwnd = new WindowInteropHelper(this).Handle;
@@ -80,6 +92,52 @@ namespace TaskbarWidget
                     NativeMethods.SetWindowPos(hwnd, new IntPtr(-1),
                         _physX, _physY, _physW, _physH,
                         NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+            }
+        }
+
+        private void OnBehaviorTick(object? sender, EventArgs e)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero) return;
+
+            // --- 1. Full-screen app detection ---
+            NativeMethods.SHQueryUserNotificationState(out var quns);
+            bool fullscreen = quns == NativeMethods.QUNS.QUNS_RUNNING_D3D_FULL_SCREEN
+                           || quns == NativeMethods.QUNS.QUNS_PRESENTATION_MODE;
+
+            // --- 2. Taskbar auto-hide: is taskbar mostly off-screen? ---
+            bool taskbarHidden = false;
+            var tray = NativeMethods.FindWindow("Shell_TrayWnd", null);
+            if (tray != IntPtr.Zero && _taskbarState != null &&
+                NativeMethods.GetWindowRect(tray, out var trayRect))
+            {
+                var sr = _taskbarState.ScreenRect;
+                int ix = Math.Max(0, Math.Min(trayRect.Right,  sr.Right)  - Math.Max(trayRect.Left, sr.Left));
+                int iy = Math.Max(0, Math.Min(trayRect.Bottom, sr.Bottom) - Math.Max(trayRect.Top,  sr.Top));
+                int overlap = ix * iy;
+                int area    = Math.Max(1, trayRect.Width * trayRect.Height);
+                taskbarHidden = overlap < area / 2;  // less than 50% of taskbar visible
+            }
+
+            // --- 3. Screenshot overlay (Snipping Tool / Win+Shift+S) ---
+            // ScreenClip is the Win11 Snipping Tool capture overlay
+            bool screenshotActive = NativeMethods.FindWindow("ScreenClip",    null) != IntPtr.Zero
+                                 || NativeMethods.FindWindow("SnipperWindow", null) != IntPtr.Zero;
+
+            bool shouldSuppress = fullscreen || taskbarHidden || screenshotActive;
+
+            if (shouldSuppress == _suppressed) return;
+            _suppressed = shouldSuppress;
+
+            if (_suppressed)
+            {
+                NativeMethods.ShowWindow(hwnd, NativeMethods.SW_HIDE);
+            }
+            else
+            {
+                NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOW);
+                NativeMethods.SetWindowPos(hwnd, new IntPtr(-1), _physX, _physY, _physW, _physH,
+                    NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
             }
         }
 
@@ -281,15 +339,10 @@ namespace TaskbarWidget
                         break;
 
                     case NativeMethods.WM_SHOWWINDOW:
-                        if (wParam == IntPtr.Zero)
+                        if (wParam == IntPtr.Zero && !_suppressed)
                         {
-                            Dispatcher.BeginInvoke(new Action(() =>
-                            {
-                                var h = new WindowInteropHelper(this).Handle;
-                                NativeMethods.SetWindowPos(h, new IntPtr(-1),
-                                    _physX, _physY, _physW, _physH,
-                                    NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
-                            }));
+                            // Prevent hide synchronously — no BeginInvoke gap
+                            handled = true;
                         }
                         break;
 
@@ -307,11 +360,14 @@ namespace TaskbarWidget
                         break;
 
                     case NativeMethods.WM_WINDOWPOSCHANGING:
-                        var wp = Marshal.PtrToStructure<NativeMethods.WINDOWPOS>(lParam);
-                        wp.hwndInsertAfter  = new IntPtr(-1);
-                        wp.flags           &= ~NativeMethods.SWP_NOZORDER;
-                        wp.flags           &= ~NativeMethods.SWP_HIDEWINDOW;
-                        Marshal.StructureToPtr(wp, lParam, false);
+                        if (!_suppressed)
+                        {
+                            var wp = Marshal.PtrToStructure<NativeMethods.WINDOWPOS>(lParam);
+                            wp.hwndInsertAfter  = new IntPtr(-1);
+                            wp.flags           &= ~NativeMethods.SWP_NOZORDER;
+                            wp.flags           &= ~NativeMethods.SWP_HIDEWINDOW;
+                            Marshal.StructureToPtr(wp, lParam, false);
+                        }
                         break;
 
                     case NativeMethods.WM_DPICHANGED:
