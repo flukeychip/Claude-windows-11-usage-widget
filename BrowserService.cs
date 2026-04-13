@@ -27,20 +27,13 @@ namespace TaskbarWidget
         private static readonly string DebugLog      = Path.Combine(AppDataDir, "debug.log");
         private static readonly string DebugHtmlFile = Path.Combine(AppDataDir, "last_response.html");
 
-        // Shared environment — keeps browser process alive between fetches to save startup time.
-        // Only the WebView2 control (renderer) is created/disposed per fetch.
-        private static CoreWebView2Environment? _env;
-
         public static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchUsageAsync(CancellationToken ct = default)
         {
             return await Application.Current.Dispatcher.InvokeAsync(
                 async () => await FetchInternal(ct)).Task.Unwrap();
         }
 
-        public static void Dispose()
-        {
-            _env = null;
-        }
+        public static void Dispose() { }
 
         // ── Main fetch logic ──────────────────────────────────────────────────
 
@@ -82,7 +75,7 @@ namespace TaskbarWidget
                 win.Content = wv;
                 win.Show();
 
-                var env = await GetEnvironmentAsync();
+                var env = await CreateEnvironmentAsync();
                 await wv.EnsureCoreWebView2Async(env);
 
                 wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
@@ -219,7 +212,7 @@ namespace TaskbarWidget
                 win.Content = wv;
                 win.Show();
 
-                var env = await GetEnvironmentAsync();
+                var env = await CreateEnvironmentAsync();
                 await wv.EnsureCoreWebView2Async(env);
 
                 wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
@@ -323,14 +316,10 @@ namespace TaskbarWidget
 
         // ── Helpers ───────────────────────────────────────────────────────────
 
-        private static async Task<CoreWebView2Environment> GetEnvironmentAsync()
+        private static async Task<CoreWebView2Environment> CreateEnvironmentAsync()
         {
-            if (_env == null)
-            {
-                Directory.CreateDirectory(UserDataDir);
-                _env = await CoreWebView2Environment.CreateAsync(userDataFolder: UserDataDir);
-            }
-            return _env;
+            Directory.CreateDirectory(UserDataDir);
+            return await CoreWebView2Environment.CreateAsync(userDataFolder: UserDataDir);
         }
 
         private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
