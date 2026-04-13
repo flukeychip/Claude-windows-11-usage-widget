@@ -136,38 +136,30 @@ namespace TaskbarWidget
                     }
                 }
 
-                // Wait for React to render usage content (polls every 500ms, up to 15s)
-                // Returns full outerHTML once "% used" or "Resets" appears in visible text
-                var waitScript = @"(function() {
-                    return new Promise(function(resolve) {
-                        var attempts = 0;
-                        var poll = setInterval(function() {
-                            attempts++;
-                            var text = document.body ? document.body.innerText : '';
-                            if (text.indexOf('% used') !== -1 || text.indexOf('Resets') !== -1 || attempts >= 30) {
-                                clearInterval(poll);
-                                resolve(JSON.stringify({ text: text.substring(0, 200), html: document.documentElement.outerHTML }));
-                            }
-                        }, 500);
-                    });
-                })()";
-
-                var waitTask = wv.CoreWebView2.ExecuteScriptAsync(waitScript);
-                await Task.WhenAny(waitTask, Task.Delay(TimeSpan.FromSeconds(18), ct));
-
-                string html;
-                if (waitTask.IsCompleted)
+                // Poll every 500ms (up to 20s) until React renders "% used" or "Resets" text
+                string html = "";
+                string previewText = "";
+                for (int attempt = 0; attempt < 40; attempt++)
                 {
-                    var resultJson = await waitTask;
-                    // resultJson is a JSON-encoded string containing { text, html } JSON — unwrap twice
-                    var inner = JsonConvert.DeserializeObject<string>(resultJson) ?? "{}";
-                    var obj = Newtonsoft.Json.Linq.JObject.Parse(inner);
-                    html = obj["html"]?.ToString() ?? "";
-                    Log($"WebView2 fetch: React content ready, preview: {obj["text"]?.ToString() ?? ""}");
+                    await Task.Delay(500, ct);
+                    var textJson = await wv.CoreWebView2.ExecuteScriptAsync("document.body ? document.body.innerText : ''");
+                    var innerText = JsonConvert.DeserializeObject<string>(textJson) ?? "";
+                    if (attempt % 4 == 0)
+                        Log($"WebView2 fetch: poll {attempt+1}, innerText length={innerText.Length}");
+
+                    if (innerText.Contains("% used") || innerText.Contains("Resets") || innerText.Contains("reset"))
+                    {
+                        previewText = innerText.Length > 300 ? innerText.Substring(0, 300) : innerText;
+                        Log($"WebView2 fetch: content found at poll {attempt+1}: {previewText}");
+                        var htmlJson2 = await wv.CoreWebView2.ExecuteScriptAsync("document.documentElement.outerHTML");
+                        html = JsonConvert.DeserializeObject<string>(htmlJson2) ?? "";
+                        break;
+                    }
                 }
-                else
+
+                if (string.IsNullOrEmpty(html))
                 {
-                    Log("WebView2 fetch: timed out waiting for React content, grabbing current HTML");
+                    Log("WebView2 fetch: timed out — usage content never appeared. Grabbing raw HTML for diagnostics.");
                     var htmlJson = await wv.CoreWebView2.ExecuteScriptAsync("document.documentElement.outerHTML");
                     html = JsonConvert.DeserializeObject<string>(htmlJson) ?? "";
                 }
