@@ -138,7 +138,6 @@ namespace TaskbarWidget
 
                 // Poll every 500ms (up to 20s) until React renders "% used" or "Resets" text
                 string html = "";
-                string previewText = "";
                 for (int attempt = 0; attempt < 40; attempt++)
                 {
                     await Task.Delay(500, ct);
@@ -147,29 +146,28 @@ namespace TaskbarWidget
                     if (attempt % 4 == 0)
                         Log($"WebView2 fetch: poll {attempt+1}, innerText length={innerText.Length}");
 
-                    if (innerText.Contains("% used") || innerText.Contains("Resets") || innerText.Contains("reset"))
+                    if (innerText.Contains("% used") || innerText.Contains("Resets in"))
                     {
-                        previewText = innerText.Length > 300 ? innerText.Substring(0, 300) : innerText;
-                        Log($"WebView2 fetch: content found at poll {attempt+1}: {previewText}");
-                        var htmlJson2 = await wv.CoreWebView2.ExecuteScriptAsync("document.documentElement.outerHTML");
-                        html = JsonConvert.DeserializeObject<string>(htmlJson2) ?? "";
+                        Log($"WebView2 fetch: content found at poll {attempt+1}");
+                        // Parse innerText directly — plain text is reliable, HTML tags may split values
+                        html = innerText;
                         break;
                     }
                 }
 
                 if (string.IsNullOrEmpty(html))
                 {
-                    Log("WebView2 fetch: timed out — usage content never appeared. Grabbing raw HTML for diagnostics.");
-                    var htmlJson = await wv.CoreWebView2.ExecuteScriptAsync("document.documentElement.outerHTML");
-                    html = JsonConvert.DeserializeObject<string>(htmlJson) ?? "";
+                    Log("WebView2 fetch: timed out — usage content never appeared");
+                    TrySave(DebugHtmlFile, "timed out waiting for usage content");
+                    return (null, null, FetchError.ParseError);
                 }
 
-                Log($"WebView2 fetch: html length = {html.Length}");
+                Log($"WebView2 fetch: content length = {html.Length}");
                 TrySave(DebugHtmlFile, html);
 
-                if (html.Length < 500)
+                if (html.Length < 50)
                 {
-                    Log("BREAK: HTML too short — page likely didn't load");
+                    Log("BREAK: content too short — page likely didn't load");
                     return (null, null, FetchError.ServiceDown);
                 }
 
@@ -293,50 +291,32 @@ namespace TaskbarWidget
 
         // ── HTML parsing ──────────────────────────────────────────────────────
 
-        private static (int? pct, string? reset) ParseUsage(string html)
+        private static (int? pct, string? reset) ParseUsage(string text)
         {
+            // Input is document.body.innerText — plain text, no HTML tags.
+            // Known format (from live page):
+            //   "Plan usage limits\nResets in 4 hr 4 min\n32% used\n..."
+
             int?    pct   = null;
             string? reset = null;
 
-            // Strategy 1: __NEXT_DATA__ JSON blob (Next.js SSR — most reliable)
-            var ndMatch = Regex.Match(html,
-                @"<script id=""__NEXT_DATA__"" type=""application/json"">([\s\S]*?)</script>",
+            // Percentage: first "X% used" in text (Plan usage limits section)
+            var pm = Regex.Match(text, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
+            if (pm.Success) pct = int.Parse(pm.Groups[1].Value);
+
+            // Reset time: "Resets in X hr Y min" / "Resets in X min" / "Resets in X hr"
+            var rm = Regex.Match(text,
+                @"Resets in\s+(\d+\s+hr(?:s)?\s+\d+\s+min|\d+\s+hr(?:s)?|\d+\s+min(?:utes?)?|\d+\s+day(?:s)?(?:\s+\d+\s+hr)?)",
                 RegexOptions.IgnoreCase);
-
-            if (ndMatch.Success)
-            {
-                var json = ndMatch.Groups[1].Value;
-                Log($"__NEXT_DATA__: found ({json.Length} chars)");
-
-                var pm = Regex.Match(json, @"""(?:percentage|pct|used_percentage|value)""\s*:\s*(\d{1,3})");
-                if (pm.Success) pct = int.Parse(pm.Groups[1].Value);
-
-                var rm = Regex.Match(json, @"""(?:reset_at|resetAt|reset_time|resets_at)""\s*:\s*""([^""]+)""");
-                if (rm.Success) reset = rm.Groups[1].Value;
-            }
-
-            // Strategy 2: "X% used" anywhere in HTML
-            if (pct == null)
-            {
-                var pm = Regex.Match(html, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
-                if (pm.Success) pct = int.Parse(pm.Groups[1].Value);
-            }
-
-            // Strategy 3: reset time text patterns
-            if (reset == null)
-            {
-                var rm = Regex.Match(html,
-                    @"Resets?\s+((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+\d{1,2}:\d{2}\s*(?:AM|PM)?)",
+            // Fallback: "Resets Mon 2:59 PM" style
+            if (!rm.Success)
+                rm = Regex.Match(text,
+                    @"Resets\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+[\d:]+\s*(?:AM|PM)?)",
                     RegexOptions.IgnoreCase);
-                if (!rm.Success)
-                    rm = Regex.Match(html,
-                        @"Resets?\s+in\s+([\d]+\s+days?(?:\s+[\d]+\s+hr)?(?:\s+[\d]+\s+min)?|[\d]+\s+hr(?:s|ours?)?(?:\s+[\d]+\s+min)?|[\d]+\s+min(?:utes?)?)",
-                        RegexOptions.IgnoreCase);
-                if (rm.Success) reset = rm.Groups[1].Value.Trim();
-            }
+            if (rm.Success) reset = rm.Groups[1].Value.Trim();
 
             if (pct == null)
-                Log("ParseUsage: all strategies failed — page structure may have changed");
+                Log($"ParseUsage: no percentage found. Text preview: {(text.Length > 200 ? text.Substring(0, 200) : text)}");
 
             return (pct, reset);
         }
