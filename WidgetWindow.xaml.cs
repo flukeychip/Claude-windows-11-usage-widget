@@ -12,8 +12,9 @@ namespace TaskbarWidget
 
         private int _physX, _physY, _physW, _physH;
 
-        private bool _pendingDrag;
-        private bool _dragging;
+        private bool     _pendingDrag;
+        private bool     _dragging;
+        private DateTime _lastClickTime = DateTime.MinValue;
         private bool _dragFeedbackShown = false;
         private int  _dragOriginMouseX, _dragOriginMouseY;
         private int  _dragOriginWinX,   _dragOriginWinY;
@@ -313,19 +314,29 @@ namespace TaskbarWidget
                         handled = true;
                         break;
 
+                    case NativeMethods.WM_LBUTTONDOWN:
+                    {
+                        var now = DateTime.UtcNow;
+                        var elapsed = (now - _lastClickTime).TotalMilliseconds;
+                        _lastClickTime = now;
+                        if (elapsed <= NativeMethods.GetDoubleClickTime())
+                        {
+                            // Second click of a double-click — cancel any pending drag, show menu
+                            _pendingDrag = false;
+                            NativeMethods.ReleaseCapture();
+                            Widget.ResetDragFeedback();
+                            Dispatcher.BeginInvoke(new Action(() => Widget.ShowContextMenu()));
+                            handled = true;
+                        }
+                        break;
+                    }
+
                     case NativeMethods.WM_LBUTTONUP when _pendingDrag:
                         _pendingDrag = false;
                         NativeMethods.ReleaseCapture();
                         Widget.ResetDragFeedback();
                         RefreshRequested?.Invoke();
                         Widget.PlayClickAnimation();
-                        handled = true;
-                        break;
-
-                    case NativeMethods.WM_LBUTTONDBLCLK:
-                        _pendingDrag = false;
-                        NativeMethods.ReleaseCapture();
-                        Widget.ShowContextMenu();
                         handled = true;
                         break;
 
