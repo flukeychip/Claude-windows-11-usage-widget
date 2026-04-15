@@ -1,5 +1,5 @@
 #define AppName "Claude Taskbar Widget"
-#define AppVersion "1.2.0"
+#define AppVersion "1.2.1"
 #define AppPublisher "flukeychip"
 #define AppExeName "TaskbarWidget.exe"
 #define BuildDir "bin\Release\net48"
