@@ -11,8 +11,10 @@ Taskbar widget showing your Claude.ai session usage in real time.
 
 No installation required. Keep all extracted files together.
 
+> **Windows blocking the file?** Right-click `TaskbarWidget.exe` → Properties → check **Unblock** → OK, then try again.
+
 ## Usage
 
 - **Click** — refresh usage
+- **Double-click** — open menu (auto-start / exit)
 - **Drag** — move along taskbar
-- **Right-click** — toggle auto-start / exit
