@@ -222,7 +222,14 @@ namespace TaskbarWidget
 
                 wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 wv.CoreWebView2.Settings.AreDevToolsEnabled            = false;
-                wv.CoreWebView2.NewWindowRequested += (s, e) => e.Handled = true;
+
+                // Redirect OAuth popups (Google, Apple, etc.) into the same WebView
+                // instead of blocking them — blocking silently breaks social sign-in.
+                wv.CoreWebView2.NewWindowRequested += (s, e) =>
+                {
+                    e.Handled = true;
+                    wv.CoreWebView2.Navigate(e.Uri);
+                };
 
                 win.Opacity = 1; win.Width = 600; win.Height = 700;
                 win.Left = (SystemParameters.WorkArea.Width  - 600) / 2;

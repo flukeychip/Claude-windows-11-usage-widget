@@ -29,8 +29,9 @@ namespace TaskbarWidget
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TaskbarWidget");
         private static readonly string DebugLog = Path.Combine(AppDataDir, "debug.log");
 
-        // 3 minutes: enough for a user to sign in, short enough to feel responsive
-        private static readonly TimeSpan SubprocessTimeout = TimeSpan.FromMinutes(3);
+        // 12 minutes: covers a full auth flow (10 min internal window + fetch overhead).
+        // Normal fetches (already signed in) complete in under 90 seconds.
+        private static readonly TimeSpan SubprocessTimeout = TimeSpan.FromMinutes(12);
 
         public static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchUsageAsync(
             CancellationToken ct = default)
