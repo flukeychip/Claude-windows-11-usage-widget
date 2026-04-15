@@ -194,7 +194,8 @@ namespace TaskbarWidget
                 win.Top  = (SystemParameters.WorkArea.Height - 700) / 2;
                 win.WindowStyle   = WindowStyle.SingleBorderWindow;
                 win.ShowInTaskbar = true;
-                win.Title         = "Sign in to Claude, then close this window";
+                win.Topmost       = true;
+                win.Title         = "Sign in to Claude — close this window when done";
                 wv.Width = 600; wv.Height = 700;
 
                 wv.CoreWebView2.Navigate("https://claude.ai/login");
