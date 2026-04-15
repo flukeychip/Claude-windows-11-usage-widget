@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Windows;
+using Newtonsoft.Json;
 
 namespace TaskbarWidget
 {
@@ -13,6 +14,53 @@ namespace TaskbarWidget
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // ── Subprocess fetch mode ─────────────────────────────────────────
+            // Launched by the main widget process to fetch usage via WebView2.
+            // Writes one JSON line to stdout and exits. No UI, no mutex.
+            if (e.Args.Length >= 1 && e.Args[0] == "--fetch")
+            {
+                ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+                // Queue after the message loop starts (Dispatcher is ready in OnStartup)
+                Dispatcher.BeginInvoke(new Action(async () =>
+                {
+                    // WinExe apps have no Console.Out — write directly to the raw stdout handle
+                    using var stdout = new System.IO.StreamWriter(
+                        Console.OpenStandardOutput(),
+                        System.Text.Encoding.UTF8) { AutoFlush = true };
+
+                    try
+                    {
+                        var (usage, resetTime, error) = await FetchSubprocess.FetchAsync(
+                            System.Threading.CancellationToken.None);
+
+                        stdout.WriteLine(JsonConvert.SerializeObject(new
+                        {
+                            usage,
+                            resetTime,
+                            error = (int)error
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        BrowserService.Log($"Subprocess unhandled: {ex.Message}");
+                        stdout.WriteLine(JsonConvert.SerializeObject(new
+                        {
+                            usage     = (double?)null,
+                            resetTime = (string?)null,
+                            error     = (int)FetchError.NetworkError
+                        }));
+                    }
+                    finally
+                    {
+                        Shutdown();
+                    }
+                }));
+
+                return;
+            }
+
+            // ── Normal widget mode ────────────────────────────────────────────
             base.OnStartup(e);
 
             try

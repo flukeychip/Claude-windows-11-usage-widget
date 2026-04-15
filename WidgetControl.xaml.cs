@@ -13,13 +13,16 @@ namespace TaskbarWidget
     {
         public event Action? DragRequested;
 
-        private MenuItem? _autoStartItem;
-        private MenuItem? _exitItem;
+        private MenuItem?   _autoStartItem;
+        private MenuItem?   _exitItem;
+        private MenuItem?   _updateItem;
+        private string?     _updateUrl;
 
         private double _targetValue = 0;
         private bool   _isError     = false;
 
         private System.Windows.Threading.DispatcherTimer? _dragAnimTimer;
+        private System.Threading.CancellationTokenSource? _clickAnimCts;
         private static readonly Random _rng = new Random();
 
         private static readonly string[] PointFrames = new[] { "point_00.png", "point_01.png", "point_02.png", "point_03.png", "point_04.png", "point_05.png", "point_01.png", "point_06.png" };
@@ -100,7 +103,7 @@ namespace TaskbarWidget
                 if (roll < 45) continue;
                 else if (roll < 80)
                 {
-                    if (!await PlayClipFrame(BlinkClip, 1)) return;
+                    if (!await PlayClip(BlinkClip)) return;
                 }
                 else if (roll < 92)
                 {
@@ -172,16 +175,29 @@ namespace TaskbarWidget
 
         public async void PlayClickAnimation()
         {
+            // Cancel any in-progress click animation so only one runs at a time.
+            _clickAnimCts?.Cancel();
+            var cts = _clickAnimCts = new System.Threading.CancellationTokenSource();
+
             StopIdleBounceAnimation();
 
-            for (int i = 0; i < PointFrames.Length; i++)
+            try
             {
-                SetSpriteFrame(PointFrames[i]);
-                if (i == 4) PlayPokeBarAnimation();
-                await Task.Delay(PointDelays[i]);
+                for (int i = 0; i < PointFrames.Length; i++)
+                {
+                    if (cts.IsCancellationRequested) return;
+                    SetSpriteFrame(PointFrames[i]);
+                    if (i == 4) PlayPokeBarAnimation();
+                    try   { await Task.Delay(PointDelays[i], cts.Token); }
+                    catch (OperationCanceledException) { return; }
+                }
             }
-
-            StartIdleBounceAnimation();
+            finally
+            {
+                // Only restart idle if this instance wasn't superseded by a newer click.
+                if (!cts.IsCancellationRequested)
+                    StartIdleBounceAnimation();
+            }
         }
 
         private void PlayPokeBarAnimation()
@@ -248,12 +264,22 @@ namespace TaskbarWidget
 
         private const double SpritePixelScale = 21.0 / 11.0;
 
+        // Cache bitmaps by name — the idle animation loops forever and was creating
+        // a new BitmapImage on every frame switch, causing slow continuous RAM growth.
+        private static readonly System.Collections.Generic.Dictionary<string, System.Windows.Media.Imaging.BitmapImage>
+            _spriteCache = new();
+
         private void SetSpriteFrame(string frameName)
         {
             try
             {
-                var uri = new Uri($"pack://application:,,,/Assets/Sprites/{frameName}");
-                var bmp = new System.Windows.Media.Imaging.BitmapImage(uri);
+                if (!_spriteCache.TryGetValue(frameName, out var bmp))
+                {
+                    var uri = new Uri($"pack://application:,,,/Assets/Sprites/{frameName}");
+                    bmp = new System.Windows.Media.Imaging.BitmapImage(uri);
+                    bmp.Freeze(); // immutable — safe to reuse, smaller memory footprint
+                    _spriteCache[frameName] = bmp;
+                }
                 SpriteImage.Source = bmp;
                 SpriteImage.Width  = bmp.PixelWidth * SpritePixelScale;
             }
@@ -294,6 +320,12 @@ namespace TaskbarWidget
         public void SetResetTime(string? resetTime)
         {
             ResetCounterLabel.Text = string.IsNullOrWhiteSpace(resetTime) ? "--:--" : resetTime;
+        }
+
+        public void ShowContextMenu()
+        {
+            if (RootGrid.ContextMenu is ContextMenu cm)
+                cm.IsOpen = true;
         }
 
         public void SetError(string statusMsg = "--:--")
@@ -363,6 +395,34 @@ namespace TaskbarWidget
                 AutoStartHelper.Disable();
             else
                 AutoStartHelper.Enable();
+        }
+
+        public void ShowUpdateAvailable(string tag, string url)
+        {
+            _updateUrl = url;
+
+            if (RootGrid.ContextMenu is not ContextMenu cm) return;
+
+            if (_updateItem == null)
+            {
+                _updateItem        = new MenuItem { Header = $"⬆  Update available ({tag})" };
+                _updateItem.Click += OnUpdateClicked;
+                cm.Items.Insert(0, _updateItem);
+                cm.Items.Insert(1, new Separator());
+            }
+            else
+            {
+                _updateItem.Header    = $"⬆  Update available ({tag})";
+                _updateItem.IsEnabled = true;
+            }
+        }
+
+        private async void OnUpdateClicked(object sender, RoutedEventArgs e)
+        {
+            if (_updateUrl == null || _updateItem == null) return;
+            _updateItem.Header    = "Downloading update...";
+            _updateItem.IsEnabled = false;
+            await UpdateService.DownloadAndInstallAsync(_updateUrl);
         }
     }
 }

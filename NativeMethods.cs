@@ -37,6 +37,7 @@ namespace TaskbarWidget
         public const int WM_LBUTTONDOWN    = 0x0201;
         public const int WM_MOUSEMOVE      = 0x0200;
         public const int WM_LBUTTONUP      = 0x0202;
+        public const int WM_LBUTTONDBLCLK  = 0x0203;
         public const int WM_RBUTTONUP      = 0x0205;
         public const int WM_DESTROY        = 0x0002;
 
@@ -177,5 +178,8 @@ namespace TaskbarWidget
 
         [DllImport("shell32.dll")]
         public static extern int SHQueryUserNotificationState(out QUNS pquns);
+
+        [DllImport("psapi.dll")]
+        public static extern bool EmptyWorkingSet(IntPtr hProcess);
     }
 }

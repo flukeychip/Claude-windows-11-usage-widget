@@ -2,7 +2,7 @@
 #define AppVersion "1.2.0"
 #define AppPublisher "flukeychip"
 #define AppExeName "TaskbarWidget.exe"
-#define BuildDir "bin\Release\net48"
+#define BuildDir "bin\x64\Release\net48"
 
 [Setup]
 AppId={{A3F7E2B1-4C9D-4E8F-B2A1-7D3C5E9F1234}
@@ -17,6 +17,9 @@ OutputBaseFilename=ClaudeTaskbarWidget_Setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
+CloseApplications=yes
+CloseApplicationsFilter=TaskbarWidget.exe
+RestartApplications=yes
 ; Don't require admin — install to user's local programs if no admin
 PrivilegesRequiredOverridesAllowed=dialog
 PrivilegesRequired=lowest

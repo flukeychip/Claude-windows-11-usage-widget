@@ -1,6 +1,7 @@
 using System;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -15,6 +16,9 @@ namespace TaskbarWidget
         // Countdown timer
         private DispatcherTimer? _countdownTimer;
         private DateTime?        _resetTarget;
+
+        // Auto-refresh every 5 minutes
+        private DispatcherTimer? _autoRefreshTimer;
 
         // ── Startup ───────────────────────────────────────────────────────────
 
@@ -32,6 +36,22 @@ namespace TaskbarWidget
 
             _window.SetValue(_config.UsagePercentage ?? 0.0);
             OnSilentRefreshRequested();
+            _ = CheckForUpdateAsync();
+
+            _autoRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(5) };
+            _autoRefreshTimer.Tick += (_, __) => OnSilentRefreshRequested();
+            _autoRefreshTimer.Start();
+        }
+
+        // ── Update check ─────────────────────────────────────────────────────
+
+        private async Task CheckForUpdateAsync()
+        {
+            var (available, tag, url) = await UpdateService.CheckAsync();
+            if (!available || tag == null || url == null) return;
+
+            Application.Current?.Dispatcher.Invoke(() =>
+                _window?.ShowUpdateAvailable(tag, url));
         }
 
         // ── Refresh ───────────────────────────────────────────────────────────
@@ -39,6 +59,9 @@ namespace TaskbarWidget
         private async void OnRefreshRequested()
         {
             if (_window is null) return;
+
+            if (ApiService.IsFetching) return;
+
             _window.SetLoading(true);
 
             await ApiService.RefreshAsync((value, resetTime, error) =>
@@ -60,7 +83,7 @@ namespace TaskbarWidget
                         ApplyError(error);
                     }
                 });
-            }, _cts.Token);
+            }, _cts.Token, manual: true);
         }
 
         private async void OnSilentRefreshRequested()
@@ -211,7 +234,13 @@ namespace TaskbarWidget
                 if (dayMatch.Success) span += TimeSpan.FromDays(int.Parse(dayMatch.Groups[1].Value));
                 if (hrMatch.Success)  span += TimeSpan.FromHours(int.Parse(hrMatch.Groups[1].Value));
                 if (minMatch.Success) span += TimeSpan.FromMinutes(int.Parse(minMatch.Groups[1].Value));
-                return DateTime.Now + span;
+
+                // Snap to minute boundary — resets always occur on a whole minute.
+                // This syncs the countdown to the real system clock rather than
+                // counting from an arbitrary sub-second offset at click time.
+                // Add 1 minute because Claude's duration is rounded down.
+                var raw = DateTime.Now + span;
+                return new DateTime(raw.Year, raw.Month, raw.Day, raw.Hour, raw.Minute, 0).AddMinutes(1);
             }
 
             return null;
@@ -236,6 +265,7 @@ namespace TaskbarWidget
 
         public void Dispose()
         {
+            _autoRefreshTimer?.Stop();
             StopCountdown();
             BrowserService.Dispose();
             _cts.Cancel();

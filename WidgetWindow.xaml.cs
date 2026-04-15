@@ -322,6 +322,18 @@ namespace TaskbarWidget
                         handled = true;
                         break;
 
+                    case NativeMethods.WM_LBUTTONDBLCLK:
+                        _pendingDrag = false;
+                        NativeMethods.ReleaseCapture();
+                        Widget.ShowContextMenu();
+                        handled = true;
+                        break;
+
+                    case NativeMethods.WM_RBUTTONUP:
+                        // Context menu is on double-click only — suppress right-click
+                        handled = true;
+                        break;
+
                     case NativeMethods.WM_LBUTTONUP when _dragging:
                         EndDrag();
                         handled = true;
@@ -448,10 +460,12 @@ namespace TaskbarWidget
             return Math.Pow(2, -12 * t) * Math.Sin((t - s) * (2 * Math.PI) / p) + 1;
         }
 
-        public void SetValue(double value)      => Widget.SetValue(value);
-        public void SetError(string msg = "--:--") => Widget.SetError(msg);
-        public void SetLoading(bool loading)    => Widget.SetLoading(loading);
-        public void SetResetTime(string? rt)    => Widget.SetResetTime(rt);
+        public void SetValue(double value)                          => Widget.SetValue(value);
+        public void SetError(string msg = "--:--")                 => Widget.SetError(msg);
+        public void SetLoading(bool loading)                       => Widget.SetLoading(loading);
+        public void SetResetTime(string? rt)                       => Widget.SetResetTime(rt);
+        public void ShowUpdateAvailable(string tag, string url)    => Widget.ShowUpdateAvailable(tag, url);
+        public void ShowContextMenu()                               => Widget.ShowContextMenu();
 
         private static void LogDebug(string msg)
         {
