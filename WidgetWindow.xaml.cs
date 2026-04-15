@@ -464,7 +464,7 @@ namespace TaskbarWidget
         public void SetError(string msg = "--:--")                 => Widget.SetError(msg);
         public void SetLoading(bool loading)                       => Widget.SetLoading(loading);
         public void SetResetTime(string? rt)                       => Widget.SetResetTime(rt);
-        public void ShowUpdateAvailable(string tag, string url)    => Widget.ShowUpdateAvailable(tag, url);
+        public void ShowUpdateAvailable(string tag)                 => Widget.ShowUpdateAvailable(tag);
         public void ShowContextMenu()                               => Widget.ShowContextMenu();
 
         private static void LogDebug(string msg)

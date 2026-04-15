@@ -16,7 +16,6 @@ namespace TaskbarWidget
         private MenuItem?   _autoStartItem;
         private MenuItem?   _exitItem;
         private MenuItem?   _updateItem;
-        private string?     _updateUrl;
 
         private double _targetValue = 0;
         private bool   _isError     = false;
@@ -397,10 +396,8 @@ namespace TaskbarWidget
                 AutoStartHelper.Enable();
         }
 
-        public void ShowUpdateAvailable(string tag, string url)
+        public void ShowUpdateAvailable(string tag)
         {
-            _updateUrl = url;
-
             if (RootGrid.ContextMenu is not ContextMenu cm) return;
 
             if (_updateItem == null)
@@ -417,12 +414,11 @@ namespace TaskbarWidget
             }
         }
 
-        private async void OnUpdateClicked(object sender, RoutedEventArgs e)
+        private void OnUpdateClicked(object sender, RoutedEventArgs e)
         {
-            if (_updateUrl == null || _updateItem == null) return;
-            _updateItem.Header    = "Downloading update...";
-            _updateItem.IsEnabled = false;
-            await UpdateService.DownloadAndInstallAsync(_updateUrl);
+            // Opens the GitHub releases page — safer than auto-downloading an exe
+            // which antivirus software on unfamiliar machines would likely block.
+            UpdateService.OpenReleasesPage();
         }
     }
 }

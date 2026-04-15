@@ -58,7 +58,23 @@ namespace TaskbarWidget
                 win.Show();
 
                 Directory.CreateDirectory(UserDataDir);
-                var env = await CoreWebView2Environment.CreateAsync(userDataFolder: UserDataDir);
+
+                CoreWebView2Environment env;
+                try
+                {
+                    env = await CoreWebView2Environment.CreateAsync(userDataFolder: UserDataDir);
+                }
+                catch (Exception ex) when (
+                    ex is WebView2RuntimeNotFoundException ||
+                    ex.Message.Contains("WebView2") ||
+                    ex.Message.Contains("Edge") ||
+                    (ex is System.Runtime.InteropServices.COMException com &&
+                     (uint)com.HResult == 0x80070002))
+                {
+                    Log($"WebView2 runtime not found: {ex.Message}");
+                    return (null, null, FetchError.WebView2Missing);
+                }
+
                 await wv.EnsureCoreWebView2Async(env);
 
                 wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
@@ -104,37 +120,40 @@ namespace TaskbarWidget
                     }
                 }
 
-                string html = "";
+                // Poll for rendered content — React app may take a moment to hydrate
+                string pageText = "";
                 for (int i = 0; i < 40; i++)
                 {
                     await Task.Delay(500, ct);
                     var textJson = await wv.CoreWebView2.ExecuteScriptAsync("document.body ? document.body.innerText : ''");
                     var text = JsonConvert.DeserializeObject<string>(textJson) ?? "";
                     if (i % 4 == 0) Log($"Poll {i + 1}, text length={text.Length}");
-                    if (text.Contains("% used") || text.Contains("Resets in"))
+
+                    // Accept the page once we see any usage-related content
+                    if (ContainsUsageContent(text))
                     {
                         Log($"Content found at poll {i + 1}");
-                        html = text;
+                        pageText = text;
                         break;
                     }
                 }
 
-                if (string.IsNullOrEmpty(html))
+                if (string.IsNullOrEmpty(pageText))
                 {
                     Log("Timed out waiting for usage content");
                     TrySave(DebugHtmlFile, "timed out");
                     return (null, null, FetchError.ParseError);
                 }
 
-                TrySave(DebugHtmlFile, html);
+                TrySave(DebugHtmlFile, pageText);
 
-                if (html.Length < 50)
+                if (pageText.Length < 50)
                     return (null, null, FetchError.ServiceDown);
 
-                var (pct, reset) = ParseUsage(html);
+                var (pct, reset) = ParseUsage(pageText);
                 if (pct == null)
                 {
-                    Log("Could not parse usage percentage");
+                    Log($"Could not parse usage percentage from text (length={pageText.Length})");
                     return (null, null, FetchError.ParseError);
                 }
 
@@ -182,7 +201,23 @@ namespace TaskbarWidget
                 win.Show();
 
                 Directory.CreateDirectory(UserDataDir);
-                var env = await CoreWebView2Environment.CreateAsync(userDataFolder: UserDataDir);
+
+                CoreWebView2Environment env;
+                try
+                {
+                    env = await CoreWebView2Environment.CreateAsync(userDataFolder: UserDataDir);
+                }
+                catch (Exception ex) when (
+                    ex is WebView2RuntimeNotFoundException ||
+                    ex.Message.Contains("WebView2") ||
+                    ex.Message.Contains("Edge") ||
+                    (ex is System.Runtime.InteropServices.COMException com &&
+                     (uint)com.HResult == 0x80070002))
+                {
+                    Log($"WebView2 runtime not found during auth: {ex.Message}");
+                    return FetchError.WebView2Missing;
+                }
+
                 await wv.EnsureCoreWebView2Async(env);
 
                 wv.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
@@ -239,21 +274,56 @@ namespace TaskbarWidget
 
         // ── Parse ─────────────────────────────────────────────────────────────
 
+        // Returns true if the page text looks like it has usage data worth parsing.
+        // Accepts English "% used", "Resets in", or any percentage followed by common
+        // usage-context words. This is intentionally broad to survive minor UI changes.
+        private static bool ContainsUsageContent(string text)
+        {
+            var lower = text.ToLowerInvariant();
+            if (lower.Contains("% used"))    return true;
+            if (lower.Contains("resets in")) return true;
+            if (lower.Contains("resets") && Regex.IsMatch(text, @"\d{1,3}%")) return true;
+            return false;
+        }
+
         private static (int? pct, string? reset) ParseUsage(string text)
         {
             int?    pct   = null;
             string? reset = null;
 
+            // Primary: "55% used"
             var pm = Regex.Match(text, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
-            if (pm.Success) pct = int.Parse(pm.Groups[1].Value);
+            if (pm.Success)
+            {
+                pct = int.Parse(pm.Groups[1].Value);
+            }
+            else
+            {
+                // Fallback: any percentage on the usage settings page is the usage percentage.
+                // We're already on /settings/usage so false positives are unlikely.
+                var fallback = Regex.Match(text, @"\b(\d{1,3})%");
+                if (fallback.Success)
+                {
+                    var val = int.Parse(fallback.Groups[1].Value);
+                    if (val <= 100)
+                    {
+                        pct = val;
+                        Log($"Used fallback percentage parse: {val}%");
+                    }
+                }
+            }
 
+            // Reset time: "Resets in X hr Y min" (relative)
             var rm = Regex.Match(text,
                 @"Resets in\s+(\d+\s+hr(?:s)?\s+\d+\s+min|\d+\s+hr(?:s)?|\d+\s+min(?:utes?)?|\d+\s+day(?:s)?(?:\s+\d+\s+hr)?)",
                 RegexOptions.IgnoreCase);
+
+            // Reset time: "Resets Mon 2:59 PM" (absolute)
             if (!rm.Success)
                 rm = Regex.Match(text,
                     @"Resets\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+[\d:]+\s*(?:AM|PM)?)",
                     RegexOptions.IgnoreCase);
+
             if (rm.Success) reset = rm.Groups[1].Value.Trim();
 
             return (pct, reset);
@@ -278,8 +348,6 @@ namespace TaskbarWidget
             catch { }
         }
 
-        // Keep the log under maxBytes. When exceeded, discard everything except
-        // the most recent keepBytes — always cuts on a line boundary.
         private static void PruneLog(string path, int maxBytes, int keepBytes)
         {
             try
@@ -291,7 +359,6 @@ namespace TaskbarWidget
                 long      offset = Math.Max(0, fs.Length - keepBytes);
                 fs.Seek(offset, SeekOrigin.Begin);
 
-                // Advance to next newline so we don't cut mid-line
                 int b;
                 while (offset < fs.Length - 1 && (b = fs.ReadByte()) != -1 && b != '\n') offset++;
 

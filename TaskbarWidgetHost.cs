@@ -47,11 +47,11 @@ namespace TaskbarWidget
 
         private async Task CheckForUpdateAsync()
         {
-            var (available, tag, url) = await UpdateService.CheckAsync();
-            if (!available || tag == null || url == null) return;
+            var (available, tag) = await UpdateService.CheckAsync();
+            if (!available || tag == null) return;
 
             Application.Current?.Dispatcher.Invoke(() =>
-                _window?.ShowUpdateAvailable(tag, url));
+                _window?.ShowUpdateAvailable(tag));
         }
 
         // ── Refresh ───────────────────────────────────────────────────────────
@@ -112,6 +112,8 @@ namespace TaskbarWidget
 
         // ── Error display ────────────────────────────────────────────────────
 
+        private bool _webView2PromptShown = false;
+
         private void ApplyError(FetchError error)
         {
             if (_window is null) return;
@@ -120,17 +122,51 @@ namespace TaskbarWidget
             switch (error)
             {
                 case FetchError.NotLoggedIn:
-                    _window.SetError("sign in");
+                    _window.SetError("Sign in required");
                     break;
                 case FetchError.NetworkError:
-                    _window.SetError("offline");
+                    _window.SetError("No connection");
                     break;
                 case FetchError.ServiceDown:
-                    _window.SetError("unavailable");
+                    _window.SetError("Claude unavailable");
+                    break;
+                case FetchError.ParseError:
+                    _window.SetError("Couldn't read usage");
+                    break;
+                case FetchError.Blocked:
+                    _window.SetError("Blocked by security software");
+                    break;
+                case FetchError.WebView2Missing:
+                    _window.SetError("Setup required");
+                    if (!_webView2PromptShown)
+                    {
+                        _webView2PromptShown = true;
+                        ShowWebView2InstallPrompt();
+                    }
                     break;
                 default:
-                    _window.SetError("--:--");
+                    _window.SetError("Something went wrong");
                     break;
+            }
+        }
+
+        private static void ShowWebView2InstallPrompt()
+        {
+            var result = System.Windows.MessageBox.Show(
+                "This widget needs Microsoft WebView2 to load Claude.ai.\n\n" +
+                "It's a free download from Microsoft — click OK to open the download page in your browser.\n\n" +
+                "After installing, restart the widget.",
+                "WebView2 Required",
+                System.Windows.MessageBoxButton.OKCancel,
+                System.Windows.MessageBoxImage.Information);
+
+            if (result == System.Windows.MessageBoxResult.OK)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName        = "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+                    UseShellExecute = true
+                });
             }
         }
 
