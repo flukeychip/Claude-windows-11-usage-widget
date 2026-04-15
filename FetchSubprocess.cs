@@ -272,7 +272,36 @@ namespace TaskbarWidget
             try
             {
                 Directory.CreateDirectory(AppDataDir);
+                PruneLog(DebugLog, maxBytes: 256 * 1024, keepBytes: 64 * 1024);
                 File.AppendAllText(DebugLog, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [subprocess] {msg}\n");
+            }
+            catch { }
+        }
+
+        // Keep the log under maxBytes. When exceeded, discard everything except
+        // the most recent keepBytes — always cuts on a line boundary.
+        private static void PruneLog(string path, int maxBytes, int keepBytes)
+        {
+            try
+            {
+                var fi = new FileInfo(path);
+                if (!fi.Exists || fi.Length <= maxBytes) return;
+
+                using var fs     = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                long      offset = Math.Max(0, fs.Length - keepBytes);
+                fs.Seek(offset, SeekOrigin.Begin);
+
+                // Advance to next newline so we don't cut mid-line
+                int b;
+                while (offset < fs.Length - 1 && (b = fs.ReadByte()) != -1 && b != '\n') offset++;
+
+                int tail = (int)(fs.Length - fs.Position);
+                var buf  = new byte[tail];
+                fs.Read(buf, 0, tail);
+
+                fs.Seek(0, SeekOrigin.Begin);
+                fs.Write(buf, 0, tail);
+                fs.SetLength(tail);
             }
             catch { }
         }
