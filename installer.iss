@@ -1,5 +1,5 @@
 #define AppName "Claude Taskbar Widget"
-#define AppVersion "1.2.2"
+#define AppVersion "1.2.3"
 #define AppPublisher "flukeychip"
 #define AppExeName "TaskbarWidget.exe"
 #define BuildDir "bin\Release\net48"
@@ -32,9 +32,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "startupentry"; Description: "Start automatically with Windows"; GroupDescription: "Additional options:"
+Name: "desktopicon";  Description: "Create a desktop shortcut";        GroupDescription: "Additional options:"; Flags: unchecked
 
 [Files]
-; Main exe
+; Main exe (no .pdb — debug symbols not needed by end users)
 Source: "{#BuildDir}\{#AppExeName}";          DestDir: "{app}"; Flags: ignoreversion
 ; Config file
 Source: "{#BuildDir}\{#AppExeName}.config";   DestDir: "{app}"; Flags: ignoreversion
@@ -52,9 +53,6 @@ Source: "{#BuildDir}\Newtonsoft.Json.dll";    DestDir: "{app}"; Flags: ignorever
 Name: "{group}\{#AppName}";       Filename: "{app}\{#AppExeName}"
 ; Desktop shortcut (optional — user can choose during install)
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
-
-[Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional options:"; Flags: unchecked
 
 [Registry]
 ; Auto-start with Windows (only if user checked the task)

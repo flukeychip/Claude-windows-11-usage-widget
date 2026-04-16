@@ -14,6 +14,10 @@ namespace TaskbarWidget
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // ── Unhandled exception handlers ──────────────────────────────────
+            AppDomain.CurrentDomain.UnhandledException += OnUnhandledException;
+            DispatcherUnhandledException               += OnDispatcherUnhandledException;
+
             // ── Subprocess fetch mode ─────────────────────────────────────────
             // Launched by the main widget process to fetch usage via WebView2.
             // Writes one JSON line to stdout and exits. No UI, no mutex.
@@ -82,6 +86,61 @@ namespace TaskbarWidget
                 MessageBox.Show($"TaskbarWidget failed to start:\n\n{ex.Message}\n\n{ex.StackTrace}",
                     "Error", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown();
+            }
+        }
+
+        private static void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            var ex      = e.ExceptionObject as Exception;
+            var logPath = GetLogPath();
+            LogCrash(logPath, ex?.ToString() ?? e.ExceptionObject?.ToString() ?? "Unknown error");
+            ShowCrashDialog(logPath);
+        }
+
+        private void OnDispatcherUnhandledException(object sender,
+            System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)
+        {
+            var logPath = GetLogPath();
+            LogCrash(logPath, e.Exception.ToString());
+            ShowCrashDialog(logPath);
+            e.Handled = true; // keep process alive so the dialog is visible
+        }
+
+        private static string GetLogPath()
+            => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                            "TaskbarWidget", "debug.log");
+
+        private static void LogCrash(string logPath, string detail)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+                File.AppendAllText(logPath,
+                    $"\n[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] CRASH\n{detail}\n");
+            }
+            catch { }
+        }
+
+        private static void ShowCrashDialog(string logPath)
+        {
+            var result = MessageBox.Show(
+                "Claude Taskbar Widget ran into a problem and needs to close.\n\n" +
+                "A crash log has been saved. Click OK to open the log folder.",
+                "Claude Taskbar Widget — Unexpected Error",
+                MessageBoxButton.OKCancel,
+                MessageBoxImage.Error);
+
+            if (result == MessageBoxResult.OK)
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName        = Path.GetDirectoryName(logPath)!,
+                        UseShellExecute = true
+                    });
+                }
+                catch { }
             }
         }
 
