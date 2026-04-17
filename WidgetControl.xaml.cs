@@ -16,9 +16,55 @@ namespace TaskbarWidget
         private MenuItem?   _autoStartItem;
         private MenuItem?   _exitItem;
         private MenuItem?   _updateItem;
+        private string?     _updateTag;
+        private string?     _updateInstallerUrl;
 
         private double _targetValue = 0;
         private bool   _isError     = false;
+        private bool   _isWeekly    = false;
+
+        // "/" diagonal stripe brush — used when displaying weekly usage instead of session usage.
+        // Stripe occupies pixels where (x + y) mod 6 < 3 (50% fill, 45° "/" direction).
+        //   Tile 6×6:  region 1 = triangle (0,0)→(3,0)→(0,3)
+        //              region 2 = quad    (0,6)→(3,6)→(6,3)→(6,0)
+        private static readonly System.Windows.Media.Brush StripeBrush = CreateStripeBrush();
+        private static readonly System.Windows.Media.Brush SolidFillBrush =
+            new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(42, 42, 42));
+
+        private static System.Windows.Media.Brush CreateStripeBrush()
+        {
+            var geo = new System.Windows.Media.PathGeometry();
+
+            var tri = new System.Windows.Media.PathFigure
+                { StartPoint = new System.Windows.Point(0, 0), IsClosed = true };
+            tri.Segments.Add(new System.Windows.Media.LineSegment(new System.Windows.Point(3, 0), true));
+            tri.Segments.Add(new System.Windows.Media.LineSegment(new System.Windows.Point(0, 3), true));
+            geo.Figures.Add(tri);
+
+            var quad = new System.Windows.Media.PathFigure
+                { StartPoint = new System.Windows.Point(0, 6), IsClosed = true };
+            quad.Segments.Add(new System.Windows.Media.LineSegment(new System.Windows.Point(3, 6), true));
+            quad.Segments.Add(new System.Windows.Media.LineSegment(new System.Windows.Point(6, 3), true));
+            quad.Segments.Add(new System.Windows.Media.LineSegment(new System.Windows.Point(6, 0), true));
+            geo.Figures.Add(quad);
+
+            var group = new System.Windows.Media.DrawingGroup();
+            group.Children.Add(new System.Windows.Media.GeometryDrawing(
+                System.Windows.Media.Brushes.Transparent, null,
+                new System.Windows.Media.RectangleGeometry(new System.Windows.Rect(0, 0, 6, 6))));
+            group.Children.Add(new System.Windows.Media.GeometryDrawing(
+                System.Windows.Media.Brushes.Black, null, geo));
+
+            var brush = new System.Windows.Media.DrawingBrush(group)
+            {
+                TileMode      = System.Windows.Media.TileMode.Tile,
+                Viewport      = new System.Windows.Rect(0, 0, 6, 6),
+                ViewportUnits = System.Windows.Media.BrushMappingMode.Absolute,
+                Stretch       = System.Windows.Media.Stretch.None
+            };
+            brush.Freeze();
+            return brush;
+        }
 
         private System.Windows.Threading.DispatcherTimer? _dragAnimTimer;
         private System.Threading.CancellationTokenSource? _clickAnimCts;
@@ -51,6 +97,9 @@ namespace TaskbarWidget
         private static readonly (string[] f, int[] d) SlowBlinkClip = (
             new[] { "idle_bounce_00.png", "idle2_02.png", "idle2_03.png", "idle2_03.png", "idle2_02.png", "idle_bounce_00.png" },
             new[] { 300, 150, 200, 200, 150, 400 });
+
+        private static readonly string[] TalkFrames = new[]
+            { "talk_00.png", "talk_01.png", "talk_02.png", "talk_03.png", "talk_04.png", "talk_05.png" };
 
         private static readonly Duration AnimDuration = new Duration(TimeSpan.FromMilliseconds(350));
 
@@ -199,6 +248,43 @@ namespace TaskbarWidget
             }
         }
 
+        public async void PlayTalkAnimation(Action onDone)
+        {
+            _clickAnimCts?.Cancel();
+            var cts = _clickAnimCts = new System.Threading.CancellationTokenSource();
+
+            StopIdleBounceAnimation();
+
+            try
+            {
+                // Shuffle frame order — always unique sequence, feels organic
+                var order = new int[] { 0, 1, 2, 3, 4, 5 };
+                for (int i = order.Length - 1; i > 0; i--)
+                {
+                    int j = _rng.Next(i + 1);
+                    (order[i], order[j]) = (order[j], order[i]);
+                }
+
+                int frameCount = _rng.Next(4, 9); // 4–8 frames per "word"
+                for (int i = 0; i < frameCount; i++)
+                {
+                    if (cts.IsCancellationRequested) return;
+                    SetSpriteFrame(TalkFrames[order[i % order.Length]]);
+                    int delay = _rng.Next(60, 130);
+                    try   { await Task.Delay(delay, cts.Token); }
+                    catch (OperationCanceledException) { return; }
+                }
+            }
+            finally
+            {
+                if (!cts.IsCancellationRequested)
+                {
+                    onDone();
+                    StartIdleBounceAnimation();
+                }
+            }
+        }
+
         private void PlayPokeBarAnimation()
         {
             double pokeX = Math.Min(TrackGrid.ActualWidth * 0.10, 16);
@@ -288,14 +374,17 @@ namespace TaskbarWidget
             }
         }
 
-        public void SetValue(double value)
+        public void SetValue(double value, bool isWeekly = false)
         {
             _targetValue = Math.Min(Math.Max(value, 0.0), 1.0);
             _isError     = false;
+            _isWeekly    = isWeekly;
 
             int pct = (int)Math.Round(_targetValue * 100);
             PercentLabel.Text       = $"{pct}%";
             PercentLabel.Foreground = new SolidColorBrush(Color.FromRgb(42, 42, 42));
+
+            FillBorder.Background = isWeekly ? StripeBrush : SolidFillBrush;
 
             AnimateFill();
         }
@@ -396,9 +485,12 @@ namespace TaskbarWidget
                 AutoStartHelper.Enable();
         }
 
-        public void ShowUpdateAvailable(string tag)
+        public void ShowUpdateAvailable(string tag, string? installerUrl = null)
         {
             if (RootGrid.ContextMenu is not ContextMenu cm) return;
+
+            _updateTag          = tag;
+            _updateInstallerUrl = installerUrl;
 
             if (_updateItem == null)
             {
@@ -414,11 +506,12 @@ namespace TaskbarWidget
             }
         }
 
-        private void OnUpdateClicked(object sender, RoutedEventArgs e)
+        private async void OnUpdateClicked(object sender, RoutedEventArgs e)
         {
-            // Opens the GitHub releases page — safer than auto-downloading an exe
-            // which antivirus software on unfamiliar machines would likely block.
-            UpdateService.OpenReleasesPage();
+            if (_updateInstallerUrl != null && _updateTag != null)
+                await UpdateService.DownloadAndInstallAsync(_updateInstallerUrl, _updateTag);
+            else
+                UpdateService.OpenReleasesPage();
         }
     }
 }

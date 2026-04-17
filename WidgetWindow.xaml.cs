@@ -321,11 +321,13 @@ namespace TaskbarWidget
                         _lastClickTime = now;
                         if (elapsed <= NativeMethods.GetDoubleClickTime())
                         {
-                            // Second click of a double-click — cancel any pending drag, show menu
+                            // Second click of a double-click — cancel any pending drag,
+                            // play talking animation then open menu
                             _pendingDrag = false;
                             NativeMethods.ReleaseCapture();
                             Widget.ResetDragFeedback();
-                            Dispatcher.BeginInvoke(new Action(() => Widget.ShowContextMenu()));
+                            Dispatcher.BeginInvoke(new Action(() =>
+                                Widget.PlayTalkAnimation(() => Widget.ShowContextMenu())));
                             handled = true;
                         }
                         break;
@@ -471,11 +473,11 @@ namespace TaskbarWidget
             return Math.Pow(2, -12 * t) * Math.Sin((t - s) * (2 * Math.PI) / p) + 1;
         }
 
-        public void SetValue(double value)                          => Widget.SetValue(value);
+        public void SetValue(double value, bool isWeekly = false)   => Widget.SetValue(value, isWeekly);
         public void SetError(string msg = "--:--")                 => Widget.SetError(msg);
         public void SetLoading(bool loading)                       => Widget.SetLoading(loading);
         public void SetResetTime(string? rt)                       => Widget.SetResetTime(rt);
-        public void ShowUpdateAvailable(string tag)                 => Widget.ShowUpdateAvailable(tag);
+        public void ShowUpdateAvailable(string tag, string? installerUrl = null) => Widget.ShowUpdateAvailable(tag, installerUrl);
         public void ShowContextMenu()                               => Widget.ShowContextMenu();
 
         private static void LogDebug(string msg)

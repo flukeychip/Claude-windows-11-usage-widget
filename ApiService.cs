@@ -14,7 +14,7 @@ namespace TaskbarWidget
         public static Task<double?> FetchMetricAsync(CancellationToken ct = default)
             => Task.FromResult<double?>(_currentValue);
 
-        public static async Task RefreshAsync(Action<double?, string?, FetchError> onUpdate,
+        public static async Task RefreshAsync(Action<double?, string?, bool, FetchError> onUpdate,
                                               CancellationToken ct = default,
                                               bool manual = false)
         {
@@ -23,11 +23,11 @@ namespace TaskbarWidget
             _isFetching = true;
             try
             {
-                var (usage, resetTime, error) = await BrowserService.FetchUsageAsync(ct);
+                var (usage, resetTime, isWeekly, error) = await BrowserService.FetchUsageAsync(ct);
                 if (usage.HasValue)
                     _currentValue = usage.Value;
 
-                onUpdate(usage, resetTime, error);
+                onUpdate(usage, resetTime, isWeekly, error);
             }
             finally
             {

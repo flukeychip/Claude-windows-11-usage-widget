@@ -23,16 +23,23 @@ namespace TaskbarWidget
 
         public static WidgetConfig Load()
         {
+            if (!File.Exists(FilePath)) return new WidgetConfig();
             try
             {
-                if (File.Exists(FilePath))
-                {
-                    var json = File.ReadAllText(FilePath);
-                    return JsonConvert.DeserializeObject<WidgetConfig>(json) ?? new WidgetConfig();
-                }
+                var json = File.ReadAllText(FilePath);
+                return JsonConvert.DeserializeObject<WidgetConfig>(json) ?? new WidgetConfig();
             }
-            catch { }
-            return new WidgetConfig();
+            catch (Exception ex)
+            {
+                // Corrupted config — delete it so the next save writes clean JSON
+                try
+                {
+                    BrowserService.Log($"Config corrupted, resetting to defaults: {ex.Message}");
+                    File.Delete(FilePath);
+                }
+                catch { }
+                return new WidgetConfig();
+            }
         }
 
         public static void Save(WidgetConfig config)

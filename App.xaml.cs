@@ -35,13 +35,14 @@ namespace TaskbarWidget
 
                     try
                     {
-                        var (usage, resetTime, error) = await FetchSubprocess.FetchAsync(
+                        var (usage, resetTime, isWeekly, error) = await FetchSubprocess.FetchAsync(
                             System.Threading.CancellationToken.None);
 
                         stdout.WriteLine(JsonConvert.SerializeObject(new
                         {
                             usage,
                             resetTime,
+                            isWeekly,
                             error = (int)error
                         }));
                     }
@@ -52,6 +53,7 @@ namespace TaskbarWidget
                         {
                             usage     = (double?)null,
                             resetTime = (string?)null,
+                            isWeekly  = false,
                             error     = (int)FetchError.NetworkError
                         }));
                     }

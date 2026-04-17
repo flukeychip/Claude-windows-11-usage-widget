@@ -1,5 +1,5 @@
 #define AppName "Claude Taskbar Widget"
-#define AppVersion "1.2.3"
+#define AppVersion "1.2.4"
 #define AppPublisher "flukeychip"
 #define AppExeName "TaskbarWidget.exe"
 #define BuildDir "bin\Release\net48"
@@ -25,7 +25,11 @@ PrivilegesRequiredOverridesAllowed=dialog
 PrivilegesRequired=lowest
 ; Run app after install
 [Run]
+; Normal install  — checkbox on finish page (default checked)
 Filename: "{app}\{#AppExeName}"; Description: "Launch Claude Taskbar Widget"; Flags: nowait postinstall skipifsilent
+; Silent update   — auto-relaunch without wizard interaction
+; WizardSilent() is a built-in Inno Setup 6 function — true when /SILENT or /VERYSILENT
+Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: WizardSilent
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

@@ -20,10 +20,19 @@ namespace TaskbarWidget
         // Auto-refresh every 5 minutes
         private DispatcherTimer? _autoRefreshTimer;
 
+        // Startup retry — back off if network isn't ready at boot
+        private bool _startupSucceeded  = false;
+        private int  _startupRetryCount = 0;
+        private static readonly int[] StartupRetryDelaysMs = { 5_000, 15_000, 45_000 };
+
         // ── Startup ───────────────────────────────────────────────────────────
 
         public void Initialize()
         {
+            // Run below normal priority — widget should never compete with user apps
+            try { System.Diagnostics.Process.GetCurrentProcess().PriorityClass =
+                      System.Diagnostics.ProcessPriorityClass.BelowNormal; } catch { }
+
             _config = ConfigStore.Load();
             AutoStartHelper.PromptIfNeeded(_config);
 
@@ -39,7 +48,13 @@ namespace TaskbarWidget
             _ = CheckForUpdateAsync();
 
             _autoRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(5) };
-            _autoRefreshTimer.Tick += (_, __) => OnSilentRefreshRequested();
+            _autoRefreshTimer.Tick += (_, __) =>
+            {
+                OnSilentRefreshRequested();
+                // Trim working set — widget is mostly idle, no need to hold pages in RAM
+                try { NativeMethods.EmptyWorkingSet(
+                          System.Diagnostics.Process.GetCurrentProcess().Handle); } catch { }
+            };
             _autoRefreshTimer.Start();
         }
 
@@ -47,11 +62,11 @@ namespace TaskbarWidget
 
         private async Task CheckForUpdateAsync()
         {
-            var (available, tag) = await UpdateService.CheckAsync();
+            var (available, tag, installerUrl) = await UpdateService.CheckAsync();
             if (!available || tag == null) return;
 
             Application.Current?.Dispatcher.Invoke(() =>
-                _window?.ShowUpdateAvailable(tag));
+                _window?.ShowUpdateAvailable(tag, installerUrl));
         }
 
         // ── Refresh ───────────────────────────────────────────────────────────
@@ -64,7 +79,7 @@ namespace TaskbarWidget
 
             _window.SetLoading(true);
 
-            await ApiService.RefreshAsync((value, resetTime, error) =>
+            await ApiService.RefreshAsync((value, resetTime, isWeekly, error) =>
             {
                 Application.Current?.Dispatcher.Invoke(() =>
                 {
@@ -73,7 +88,7 @@ namespace TaskbarWidget
 
                     if (value.HasValue)
                     {
-                        _window.SetValue(value.Value);
+                        _window.SetValue(value.Value, isWeekly);
                         StartCountdown(resetTime);
                         _config.UsagePercentage = value.Value;
                         ConfigStore.Save(_config);
@@ -90,14 +105,15 @@ namespace TaskbarWidget
         {
             if (_window is null) return;
 
-            await ApiService.RefreshAsync((value, resetTime, error) =>
+            await ApiService.RefreshAsync((value, resetTime, isWeekly, error) =>
             {
                 Application.Current?.Dispatcher.Invoke(() =>
                 {
                     if (_window is null) return;
                     if (value.HasValue)
                     {
-                        _window.SetValue(value.Value);
+                        _startupSucceeded = true;
+                        _window.SetValue(value.Value, isWeekly);
                         StartCountdown(resetTime);
                         _config.UsagePercentage = value.Value;
                         ConfigStore.Save(_config);
@@ -105,6 +121,16 @@ namespace TaskbarWidget
                     else
                     {
                         ApplyError(error);
+
+                        // Retry on startup if the network wasn't ready yet
+                        if (!_startupSucceeded && _startupRetryCount < StartupRetryDelaysMs.Length)
+                        {
+                            int delay = StartupRetryDelaysMs[_startupRetryCount++];
+                            BrowserService.Log($"Startup fetch failed ({error}), retrying in {delay / 1000}s");
+                            Task.Delay(delay, _cts.Token)
+                                .ContinueWith(_ => Application.Current?.Dispatcher.Invoke(OnSilentRefreshRequested),
+                                              System.Threading.Tasks.TaskContinuationOptions.NotOnCanceled);
+                        }
                     }
                 });
             }, _cts.Token);
@@ -231,6 +257,28 @@ namespace TaskbarWidget
         private static DateTime? ParseResetTime(string? s)
         {
             if (string.IsNullOrWhiteSpace(s)) return null;
+
+            // "May 1" — billing-cycle reset: month + day, no time (midnight)
+            var monthDayMatch = Regex.Match(s.Trim(),
+                @"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+(\d{1,2})$",
+                RegexOptions.IgnoreCase);
+            if (monthDayMatch.Success)
+            {
+                var monthAbbr = monthDayMatch.Groups[1].Value.Substring(0, 3).ToLowerInvariant();
+                var day       = int.Parse(monthDayMatch.Groups[2].Value);
+                var monthNums = new System.Collections.Generic.Dictionary<string, int>
+                {
+                    ["jan"]=1,["feb"]=2,["mar"]=3,["apr"]=4,["may"]=5,["jun"]=6,
+                    ["jul"]=7,["aug"]=8,["sep"]=9,["oct"]=10,["nov"]=11,["dec"]=12
+                };
+                if (monthNums.TryGetValue(monthAbbr, out var month))
+                {
+                    var now    = DateTime.Now;
+                    var target = new DateTime(now.Year, month, day, 0, 0, 0);
+                    if (target <= now) target = target.AddYears(1);
+                    return target;
+                }
+            }
 
             // "Mon 2:59 PM" — absolute day + time
             var absMatch = Regex.Match(s,

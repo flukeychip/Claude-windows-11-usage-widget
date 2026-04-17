@@ -7,8 +7,8 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>TaskbarWidget</AssemblyName>
     <RootNamespace>TaskbarWidget</RootNamespace>
-    <AssemblyVersion>1.2.3.0</AssemblyVersion>
-    <FileVersion>1.2.3.0</FileVersion>
+    <AssemblyVersion>1.2.4.0</AssemblyVersion>
+    <FileVersion>1.2.4.0</FileVersion>
     <Platforms>AnyCPU</Platforms>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <!--

@@ -33,7 +33,7 @@ namespace TaskbarWidget
         // Normal fetches (already signed in) complete in under 90 seconds.
         private static readonly TimeSpan SubprocessTimeout = TimeSpan.FromMinutes(12);
 
-        public static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchUsageAsync(
+        public static async Task<(double? Usage, string? ResetTime, bool IsWeekly, FetchError Error)> FetchUsageAsync(
             CancellationToken ct = default)
         {
             var exePath = Process.GetCurrentProcess().MainModule!.FileName;
@@ -60,13 +60,13 @@ namespace TaskbarWidget
                 {
                     // Can't spawn the subprocess at all — likely blocked by security software
                     Log($"Subprocess fetch: failed to start — {ex.Message}");
-                    return (null, null, FetchError.Blocked);
+                    return (null, null, false, FetchError.Blocked);
                 }
 
                 if (proc == null)
                 {
                     Log("Subprocess fetch: Process.Start returned null");
-                    return (null, null, FetchError.Blocked);
+                    return (null, null, false, FetchError.Blocked);
                 }
 
                 var readTask = proc.StandardOutput.ReadToEndAsync();
@@ -77,7 +77,7 @@ namespace TaskbarWidget
                 {
                     Log("Subprocess fetch: timed out — killing");
                     try { proc.Kill(); } catch { }
-                    return (null, null, FetchError.NetworkError);
+                    return (null, null, false, FetchError.NetworkError);
                 }
 
                 proc.WaitForExit(5000);
@@ -91,24 +91,25 @@ namespace TaskbarWidget
                 {
                     var err = exitCode == 0 ? FetchError.NetworkError : FetchError.Blocked;
                     Log($"Subprocess fetch: empty output, exit={exitCode} → {err}");
-                    return (null, null, err);
+                    return (null, null, false, err);
                 }
 
                 var obj   = JObject.Parse(json);
                 var error = (FetchError)(obj["error"]?.Value<int>() ?? 0);
 
                 if (error != FetchError.None)
-                    return (null, null, error);
+                    return (null, null, false, error);
 
                 double? usage     = obj["usage"]?.Value<double>();
                 string? resetTime = obj["resetTime"]?.Value<string>();
+                bool    isWeekly  = obj["isWeekly"]?.Value<bool>() ?? false;
 
-                return (usage, resetTime, FetchError.None);
+                return (usage, resetTime, isWeekly, FetchError.None);
             }
             catch (Exception ex)
             {
                 Log($"Subprocess fetch error: {ex.GetType().Name}: {ex.Message}");
-                return (null, null, FetchError.NetworkError);
+                return (null, null, false, FetchError.NetworkError);
             }
             finally
             {

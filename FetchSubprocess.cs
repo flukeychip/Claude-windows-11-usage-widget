@@ -22,7 +22,7 @@ namespace TaskbarWidget
         private static readonly string DebugLog      = Path.Combine(AppDataDir, "debug.log");
         private static readonly string DebugHtmlFile = Path.Combine(AppDataDir, "last_response.html");
 
-        public static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchAsync(CancellationToken ct)
+        public static async Task<(double? Usage, string? ResetTime, bool IsWeekly, FetchError Error)> FetchAsync(CancellationToken ct)
         {
             var result = await FetchViaWebView2(ct);
 
@@ -30,7 +30,7 @@ namespace TaskbarWidget
             {
                 Log("Session expired — launching login window");
                 var authErr = await AuthenticateWithWebView2(ct);
-                if (authErr != FetchError.None) return (null, null, authErr);
+                if (authErr != FetchError.None) return (null, null, false, authErr);
                 result = await FetchViaWebView2(ct);
             }
 
@@ -39,7 +39,7 @@ namespace TaskbarWidget
 
         // ── Fetch ─────────────────────────────────────────────────────────────
 
-        private static async Task<(double? Usage, string? ResetTime, FetchError Error)> FetchViaWebView2(CancellationToken ct)
+        private static async Task<(double? Usage, string? ResetTime, bool IsWeekly, FetchError Error)> FetchViaWebView2(CancellationToken ct)
         {
             Window?   win = null;
             WebView2? wv  = null;
@@ -72,7 +72,7 @@ namespace TaskbarWidget
                      (uint)com.HResult == 0x80070002))
                 {
                     Log($"WebView2 runtime not found: {ex.Message}");
-                    return (null, null, FetchError.WebView2Missing);
+                    return (null, null, false, FetchError.WebView2Missing);
                 }
 
                 await wv.EnsureCoreWebView2Async(env);
@@ -106,7 +106,7 @@ namespace TaskbarWidget
                 if (finalUrl.Contains("/login") || finalUrl.Contains("/auth"))
                 {
                     Log("Redirected to login — not logged in");
-                    return (null, null, FetchError.NotLoggedIn);
+                    return (null, null, false, FetchError.NotLoggedIn);
                 }
 
                 if (!usagePageLoaded.Task.IsCompleted || !usagePageLoaded.Task.Result)
@@ -116,7 +116,7 @@ namespace TaskbarWidget
                     if (title.Contains("Just a moment") || title.Contains("Attention Required"))
                     {
                         Log("Cloudflare challenge — clearance may have expired");
-                        return (null, null, FetchError.NetworkError);
+                        return (null, null, false, FetchError.NetworkError);
                     }
                 }
 
@@ -142,29 +142,29 @@ namespace TaskbarWidget
                 {
                     Log("Timed out waiting for usage content");
                     TrySave(DebugHtmlFile, "timed out");
-                    return (null, null, FetchError.ParseError);
+                    return (null, null, false, FetchError.ParseError);
                 }
 
                 TrySave(DebugHtmlFile, pageText);
 
                 if (pageText.Length < 50)
-                    return (null, null, FetchError.ServiceDown);
+                    return (null, null, false, FetchError.ServiceDown);
 
-                var (pct, reset) = ParseUsage(pageText);
+                var (pct, isWeekly, reset) = ParseUsage(pageText);
                 if (pct == null)
                 {
                     Log($"Could not parse usage percentage from text (length={pageText.Length})");
-                    return (null, null, FetchError.ParseError);
+                    return (null, null, false, FetchError.ParseError);
                 }
 
-                Log($"Result: {pct}%, reset='{reset}'");
-                return (pct.Value / 100.0, reset, FetchError.None);
+                Log($"Result: {pct}%, isWeekly={isWeekly}, reset='{reset}'");
+                return (pct.Value / 100.0, reset, isWeekly, FetchError.None);
             }
-            catch (OperationCanceledException) { return (null, null, FetchError.NetworkError); }
+            catch (OperationCanceledException) { return (null, null, false, FetchError.NetworkError); }
             catch (Exception ex)
             {
                 Log($"Fetch error: {ex.GetType().Name}: {ex.Message}");
-                return (null, null, FetchError.NetworkError);
+                return (null, null, false, FetchError.NetworkError);
             }
             finally
             {
@@ -293,47 +293,97 @@ namespace TaskbarWidget
             return false;
         }
 
-        private static (int? pct, string? reset) ParseUsage(string text)
+        private static (int? pct, bool isWeekly, string? reset) ParseUsage(string text)
         {
-            int?    pct   = null;
-            string? reset = null;
+            // The Claude.ai usage page has three sections:
+            //   1. "Current session"  — per-session usage, "Resets in X hr Y min"
+            //   2. "Weekly limits"    — per-week usage,    "Resets Mon HH:MM AM/PM"
+            //   3. "Extra usage"      — spend %, billing,  "Resets May 1"
+            //
+            // Rule: show session % if > 0.
+            //       Otherwise show weekly % with the stripe visual (isWeekly = true).
+            //       If both are 0, show session % normally (genuinely idle state).
 
-            // Primary: "55% used"
-            var pm = Regex.Match(text, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
-            if (pm.Success)
+            int? sessionPct = null, weeklyPct = null;
+            string? sessionReset = null, weeklyReset = null;
+
+            var sessionIdx    = text.IndexOf("Current session",    StringComparison.OrdinalIgnoreCase);
+            var weeklyIdx     = text.IndexOf("Weekly limits",      StringComparison.OrdinalIgnoreCase);
+            var additionalIdx = text.IndexOf("Additional features", StringComparison.OrdinalIgnoreCase);
+
+            // ── Session section ───────────────────────────────────────────────
+            if (sessionIdx >= 0)
             {
-                pct = int.Parse(pm.Groups[1].Value);
+                int end     = weeklyIdx > sessionIdx ? weeklyIdx : text.Length;
+                var section = text.Substring(sessionIdx, end - sessionIdx);
+
+                var pm = Regex.Match(section, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
+                if (pm.Success) sessionPct = int.Parse(pm.Groups[1].Value);
+
+                var rm = Regex.Match(section,
+                    @"Resets in\s+(\d+\s+hr(?:s)?\s+\d+\s+min|\d+\s+hr(?:s)?|\d+\s+min(?:utes?)?|\d+\s+day(?:s)?(?:\s+\d+\s+hr)?)",
+                    RegexOptions.IgnoreCase);
+                if (rm.Success) sessionReset = rm.Groups[1].Value.Trim();
             }
-            else
+
+            // ── Weekly section ────────────────────────────────────────────────
+            if (weeklyIdx >= 0)
             {
-                // Fallback: any percentage on the usage settings page is the usage percentage.
-                // We're already on /settings/usage so false positives are unlikely.
-                var fallback = Regex.Match(text, @"\b(\d{1,3})%");
-                if (fallback.Success)
+                int end     = additionalIdx > weeklyIdx ? additionalIdx : text.Length;
+                var section = text.Substring(weeklyIdx, end - weeklyIdx);
+
+                var pm = Regex.Match(section, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
+                if (pm.Success) weeklyPct = int.Parse(pm.Groups[1].Value);
+
+                var rm = Regex.Match(section,
+                    @"Resets\s+((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+[\d:]+\s*(?:AM|PM)?)",
+                    RegexOptions.IgnoreCase);
+                if (rm.Success) weeklyReset = rm.Groups[1].Value.Trim();
+            }
+
+            // ── Decision ──────────────────────────────────────────────────────
+            if (sessionPct.HasValue || weeklyPct.HasValue)
+            {
+                bool showWeekly = sessionPct.GetValueOrDefault(0) == 0
+                               && weeklyPct.GetValueOrDefault(0)  >  0;
+
+                int     pct   = showWeekly ? weeklyPct!.Value : sessionPct.GetValueOrDefault(0);
+                string? reset = showWeekly ? weeklyReset       : sessionReset;
+
+                // If the chosen reset is null, try the other one
+                reset ??= showWeekly ? sessionReset : weeklyReset;
+
+                // Last resort: billing-cycle date ("May 1")
+                if (reset == null)
                 {
-                    var val = int.Parse(fallback.Groups[1].Value);
-                    if (val <= 100)
-                    {
-                        pct = val;
-                        Log($"Used fallback percentage parse: {val}%");
-                    }
+                    var billingRm = Regex.Match(text,
+                        @"Resets\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2})",
+                        RegexOptions.IgnoreCase);
+                    if (billingRm.Success) reset = billingRm.Groups[1].Value.Trim();
+                }
+
+                return (pct, showWeekly, reset);
+            }
+
+            // ── Fallback: no section headings found (old/changed page format) ─
+            var fallbackPm = Regex.Match(text, @"(\d{1,3})%\s+used", RegexOptions.IgnoreCase);
+            if (!fallbackPm.Success)
+                fallbackPm = Regex.Match(text, @"\b(\d{1,3})%");
+
+            if (fallbackPm.Success)
+            {
+                var val = int.Parse(fallbackPm.Groups[1].Value);
+                if (val <= 100)
+                {
+                    var fallbackRm = Regex.Match(text,
+                        @"Resets(?:\s+in)?\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*[\s\d:]*(?:AM|PM)?|\d+\s+hr[^\n]*)",
+                        RegexOptions.IgnoreCase);
+                    Log($"Used fallback percentage parse: {val}%");
+                    return (val, false, fallbackRm.Success ? fallbackRm.Groups[1].Value.Trim() : null);
                 }
             }
 
-            // Reset time: "Resets in X hr Y min" (relative)
-            var rm = Regex.Match(text,
-                @"Resets in\s+(\d+\s+hr(?:s)?\s+\d+\s+min|\d+\s+hr(?:s)?|\d+\s+min(?:utes?)?|\d+\s+day(?:s)?(?:\s+\d+\s+hr)?)",
-                RegexOptions.IgnoreCase);
-
-            // Reset time: "Resets Mon 2:59 PM" (absolute)
-            if (!rm.Success)
-                rm = Regex.Match(text,
-                    @"Resets\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+[\d:]+\s*(?:AM|PM)?)",
-                    RegexOptions.IgnoreCase);
-
-            if (rm.Success) reset = rm.Groups[1].Value.Trim();
-
-            return (pct, reset);
+            return (null, false, null);
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
